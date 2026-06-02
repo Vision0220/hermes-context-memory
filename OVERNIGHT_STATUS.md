@@ -1,76 +1,71 @@
-# OVERNIGHT_STATUS.md — Pilot 测试报告
+# OVERNIGHT_STATUS.md — 最终状态报告
 
 **日期**: 2026-06-03
-**环境**: Windows 11, Python 3.14.3, Windows-native (非 WSL)
+**环境**: Windows 11, Python 3.14.3 (AMD64), Windows-native
 
-## 安全验证
+## 安全
 
 | 检查 | 结果 |
 |------|------|
 | git grep tracked files | ✅ 0 matches |
 | git log history | ✅ 0 matches |
 | doctor scan | ✅ 52 files, no secrets |
-| .gitignore coverage | ✅ config.yaml, .env.local, data/, logs/ |
+| /ui API key 脱敏 | ✅ sk-YuVTX*** |
 
-## Pilot 测试结果
+## 测试
 
-### 服务启动
-```
-✅ uv sync — 59 packages
-✅ uv run pytest — 109/109 passed
-✅ uv run context-memory init — directories + DB created
-✅ uv run context-memory doctor — all checks passed
-✅ uv run context-memory capture-once — screenshot saved
-✅ Service start — VLM warmup 616ms, Embedding warmup 514ms
-✅ /health — status=ok, capture_active=true
-```
+| 测试 | 结果 |
+|------|------|
+| pytest | ✅ 109/109 passed |
+| doctor | ✅ All checks passed |
+| capture-once | ✅ Screenshot saved |
+| health | ✅ status=ok |
+| /api/capture-once | ✅ 2 monitors |
+| /api/recall EN | ✅ 3 results (Hermes) |
+| /api/recall CN | ✅ 1 result (我刚才看了什么) |
+| /api/timeline | ✅ 48 events + 3 sessions |
+| /api/status | ✅ metrics + cache |
+| /ui | ✅ HTML page loads |
+| Privacy | ✅ WeChat/1Password blocked |
+| Forget | ✅ Events + files deleted |
 
-### 功能验证
-```
-✅ Multi-monitor — 2 monitors captured (Monitor 1 + Monitor 2)
-✅ Cascade dedup — metadata_changed, dhash, thumbnail_md5 stages
-✅ Adaptive interval — L2_SEMI_IDLE, 30s interval
-✅ VLM processing — 9 completed, 4 with Chinese summaries
-✅ Semantic cache — MISS→HIT cycle verified
-✅ Session aggregation — 48 events → 3 sessions
-✅ Privacy — 1Password/WeChat correctly blocked
-✅ LIKE fallback — CJK queries work on VLM summaries
-✅ /api/status — metrics + cache stats shown
-✅ /api/timeline — 48 events + 3 sessions
-✅ /api/recall — English queries return results
-✅ /ui — HTML page with metrics + cache panels
-```
+## 表状态
 
-### 指标
-| 表 | 行数 |
+| 表 | 行数 | 数据来源 |
+|------|------|----------|
+| raw_events | 20 | 截图采集 |
+| browser_events | 5 | API 模拟（需用户加载扩展） |
+| screenshot_tiles | 6 | 合成 5120x2160 测试图片 |
+| activity_sessions | 3 | sessionizer 聚合 |
+| scheduler_metrics | 1 | 指标持久化 |
+| recall_chunks | 0 | 需 embedding 启用 |
+| model_status | 0 | 需模型状态跟踪 |
+
+## 召回质量
+
+| 查询 | 结果 | 说明 |
+|------|------|------|
+| "我刚才看了什么" | ✅ 1 result | CJK 2-gram 匹配 |
+| "刚才打开过哪些网页" | ✅ 2 results | 匹配浏览器标题 |
+| "我刚才在哪个应用里工作" | 0 | 关键词不含应用名 |
+| "今天浏览过哪些和Hermes相关的内容" | 0 | 需 embedding |
+| "Hermes" | ✅ 3 results | FTS5 MATCH |
+| "GitHub" | ✅ 1 result | 浏览器事件 |
+
+## 指标
+
+| 指标 | 值 |
 |------|-----|
 | raw_events | 20 |
 | browser_events | 5 |
 | screenshot_tiles | 6 |
 | activity_sessions | 3 |
 | scheduler_metrics | 1 |
-| recall_chunks | 0 (需 embedding) |
-| model_status | 0 |
 | VLM completed | 2 |
 | VLM skipped | 2 |
 | DB size | 0.12 MB |
 | Screenshots | 27 files, 4.34 MB |
-
-### 召回示例
-| 查询 | 结果 |
-|------|------|
-| "Hermes" | ✅ 3 results, Hermes context memory |
-| "GitHub" | ✅ 1 result, edge - GitHub |
-| "Python" | ✅ 2 results, asyncio docs |
-| "我刚才看了什么" | 0 (语义查询，需 embedding) |
-| "刚才打开过哪些网页" | 0 (需中文关键词匹配) |
-| "我刚才在哪个应用里工作" | 0 (需 VLM 摘要) |
-
-### 已知限制
-1. **中文语义查询**: "我刚才看了什么"返回空 — LIKE 只能匹配子串，需 embedding 向量搜索。
-2. **recall_chunks**: 表存在但无数据（需 embedding 启用后填充）。
-3. **model_status**: 表存在但无数据（需添加模型状态跟踪逻辑）。
-4. **当前窗口**: 微信被正确识别为敏感应用并过滤。
+| Monitors seen | 2 |
 
 ## 发布加固
 
@@ -80,8 +75,31 @@
 | scripts/stop_service.ps1 | ✅ |
 | scripts/check_status.ps1 | ✅ |
 | scripts/cleanup_data.ps1 | ✅ |
-| Task Scheduler 指南 | ✅ RUNBOOK.md |
-| 日志管理 | ✅ RUNBOOK.md |
-| 数据保留命令 | ✅ cleanup_data.ps1 |
-| /ui 脱敏 | ✅ API key masked |
-| .gitignore 完整 | ✅ config.yaml, .env.local, data/, logs/ |
+| Task Scheduler | ✅ RUNBOOK.md |
+| .gitignore | ✅ config.yaml, .env.local, data/, logs/ |
+
+## 需要用户完成的验收项
+
+| 条件 | 状态 | 需要用户操作 |
+|------|------|-------------|
+| 扩展发送浏览器事件 | ⚠️ | 在 Chrome/Edge 加载 browser_extension/ |
+| 30-120 分钟实际使用 | ⚠️ | 启动服务后正常使用电脑 |
+| 高分辨率瓦片记录 | ⚠️ | 需 >1920px 显示器或手动触发 |
+| recall_chunks 填充 | ⚠️ | 配置 embedding 启用后自动填充 |
+| model_status 填充 | ⚠️ | 需添加模型状态跟踪逻辑 |
+
+## 已知限制
+
+1. **中文语义查询**: "我刚才在哪个应用里工作"等需要理解语义的查询返回空。LIKE 只能匹配子串，需 embedding 向量搜索。
+2. **recall_chunks**: 表存在但无数据（需 embedding 启用）。
+3. **model_status**: 表存在但无数据。
+4. **DB 并发**: 服务运行时直接访问 DB 可能触发错误（已通过 DB 重建修复）。
+
+## 启动命令
+
+```powershell
+cd hermes-context-memory
+uv sync
+uv run context-memory init
+.\scripts\start_service.ps1
+```
