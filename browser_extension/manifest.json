@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Hermes Context Memory",
+  "description": "将浏览器上下文发送到 Hermes Context Memory 本地服务",
+  "version": "1.0.0",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "windows"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:1833/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Hermes Context Memory"
+  },
+  "icons": {}
+}
