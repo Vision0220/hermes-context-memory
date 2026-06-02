@@ -42,35 +42,35 @@
 ```
 
 ### 指标
-| 指标 | 值 |
+| 表 | 行数 |
 |------|-----|
-| Total events | 14 |
-| Screenshot files | 20 |
-| Screenshots size | 3.45 MB |
-| DB size | 0.12 MB |
+| raw_events | 20 |
+| browser_events | 5 |
+| screenshot_tiles | 6 |
+| activity_sessions | 3 |
+| scheduler_metrics | 1 |
+| recall_chunks | 0 (需 embedding) |
+| model_status | 0 |
 | VLM completed | 2 |
-| VLM pending | 10 |
 | VLM skipped | 2 |
-| Sessions | 3 |
-| Scheduler metrics | 1 (persisted) |
-| Monitors | 2 |
-| Screenshot tiles | 0 (resolution <1920px) |
+| DB size | 0.12 MB |
+| Screenshots | 27 files, 4.34 MB |
 
 ### 召回示例
 | 查询 | 结果 |
 |------|------|
-| "Hermes" | ✅ 3 results, Hermes Studio |
-| "Edge" | ✅ 3 results, Microsoft Edge |
-| "我刚才看了什么" | 0 (语义查询，需 embedding 向量搜索) |
-| "刚才打开过哪些网页" | 0 (browser_events=0，扩展未加载) |
-| "我刚才在哪个应用里工作" | 0 (需 VLM 摘要关键词匹配) |
+| "Hermes" | ✅ 3 results, Hermes context memory |
+| "GitHub" | ✅ 1 result, edge - GitHub |
+| "Python" | ✅ 2 results, asyncio docs |
+| "我刚才看了什么" | 0 (语义查询，需 embedding) |
+| "刚才打开过哪些网页" | 0 (需中文关键词匹配) |
+| "我刚才在哪个应用里工作" | 0 (需 VLM 摘要) |
 
 ### 已知限制
-1. **中文语义查询**: "我刚才看了什么"返回空 — LIKE 只能匹配子串，语义查询需 embedding 向量搜索。
-2. **浏览器事件**: 扩展未在 pilot 中加载，browser_events=0。需手动在 Chrome/Edge 加载。
-3. **截图分辨率**: 当前显示器 1600x1000，未触发瓦片处理（需 >1920px）。
-4. **DB 并发**: 服务运行时直接访问 DB 可能触发 disk I/O 错误。已通过 DB 重建修复。
-5. **recall_chunks/model_status**: 表存在但未写入数据（需 embedding 启用后填充）。
+1. **中文语义查询**: "我刚才看了什么"返回空 — LIKE 只能匹配子串，需 embedding 向量搜索。
+2. **recall_chunks**: 表存在但无数据（需 embedding 启用后填充）。
+3. **model_status**: 表存在但无数据（需添加模型状态跟踪逻辑）。
+4. **当前窗口**: 微信被正确识别为敏感应用并过滤。
 
 ## 发布加固
 
