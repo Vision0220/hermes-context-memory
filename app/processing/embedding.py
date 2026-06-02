@@ -27,6 +27,7 @@ def get_embedding_client(config: AppConfig) -> httpx.AsyncClient:
         _emb_client = httpx.AsyncClient(
             timeout=httpx.Timeout(config.models.embedding.timeout, connect=10.0),
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+            verify=False,
         )
     return _emb_client
 

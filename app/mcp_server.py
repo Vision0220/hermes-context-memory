@@ -23,7 +23,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "hermes-context-memory",
-    description="本地上下文记忆服务 — 让 Agent 记住用户看过什么",
+    instructions="本地上下文记忆服务 — 让 Agent 记住用户看过什么",
 )
 
 

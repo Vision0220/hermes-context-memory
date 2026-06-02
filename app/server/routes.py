@@ -285,10 +285,18 @@ pre{{background:#161b22;padding:12px;border-radius:6px;overflow-x:auto;font-size
 </table></div>
 <h2>Actions</h2>
 <div class="card">
-<button onclick="fetch('/api/capture-once',{method:'POST'}).then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Capture Once</button>
-<button onclick="fetch('/api/warmup',{method:'POST'}).then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Warmup</button>
-<button onclick="fetch('/api/status').then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Status</button>
+<button onclick="doAction('/api/capture-once','POST')">Capture Once</button>
+<button onclick="doAction('/api/warmup','POST')">Warmup</button>
+<button onclick="doAction('/api/status','GET')">Status</button>
 <pre id="out">Click an action...</pre>
+<script>
+function doAction(url, method) {{
+  fetch(url, {{method: method}})
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{ document.getElementById('out').textContent = JSON.stringify(d, null, 2); }})
+    .catch(function(e) {{ document.getElementById('out').textContent = 'Error: ' + e; }});
+}}
+</script>
 </div>
 <h2>Privacy</h2>
 <div class="card">

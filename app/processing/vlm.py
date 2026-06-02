@@ -30,9 +30,11 @@ def get_vlm_client(config: AppConfig) -> httpx.AsyncClient:
     """获取共享的 VLM HTTP 客户端（连接池复用）。"""
     global _vlm_client
     if _vlm_client is None:
+        # 自签名证书：verify=False
         _vlm_client = httpx.AsyncClient(
             timeout=httpx.Timeout(config.models.vlm.timeout, connect=10.0),
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+            verify=False,
         )
     return _vlm_client
 

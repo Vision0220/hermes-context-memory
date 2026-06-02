@@ -1,29 +1,35 @@
-# DEV_NOTES — 开发笔记
+# DEV_NOTES.md — 技术债务
 
-## 已知限制
+## 已修复 (本次验证)
 
-### Windows 窗口信息采集
+1. **/ui f-string bug**: JS 花括号在 Python f-string 中被解释 → 用 `{{}}` 转义
+2. **MCP FastMCP API**: `description` → `instructions`
+3. **SSL 自签名证书**: httpx 添加 `verify=False`
+4. **Secret 泄露**: filter-branch 清理 git 历史
 
-`pygetwindow` 在某些窗口类型下可能无法获取进程名。备选方案是通过 Windows 原生 API（ctypes）获取。当前实现了两个路径：先尝试 pygetwindow，失败则尝试 ctypes Win32 API。
+## 技术债务
 
-### sqlite-vec 依赖
+### 高优先级
+1. **中文 FTS5 分词**: SQLite FTS5 默认不支持中文分词,搜索中文关键词返回空
+   - 方案: 使用 jieba 分词预处理,或 VLM 摘要中生成英文关键词
+2. **瓦片处理**: 5120x2160 图片应分块处理,只处理变化瓦片
+   - 方案: 4x3 grid, 只对 text_density > 阈值的瓦片调用 VLM
+3. **语义缓存**: 相同截图重复调用 VLM
+   - 方案: 以 thumbnail_md5 为 key 缓存 VLM 结果
 
-sqlite-vec 需要 C 编译环境。如果安装失败，项目自动退化为纯 FTS5 检索，功能不受影响（只是没有向量相似度排序）。
+### 中优先级
+4. **sessionizer 集成**: 事件→会话聚合模块存在但未接入管线
+5. **scheduler_metrics**: 调度器指标记录表已建但未写入
+6. **VLM 超时处理**: 如果 VLM 响应 >60s,采集循环会阻塞
+   - 方案: 用 asyncio.wait_for 包装,超时则 fallback
 
-### VLM 和 Embedding 均为可选
+### 低优先级
+7. **sqlite-vec 向量检索**: 模块存在但未在 search.py 中集成
+8. **截图目录按 monitor_id 分目录**: 当前所有截图在同一目录
+9. **浏览器扩展 popup 实时刷新**: 当前 popup 只在打开时读取一次状态
 
-两者都默认禁用。核心功能（截图、窗口记录、FTS 检索、CLI、REST API）不依赖任何外部 AI 服务。
+## 环境特定问题
 
-## 测试环境
-
-- Windows 11 Home China
-- Python 3.11+
-- uv 包管理器
-
-## 开发顺序
-
-Phase 1 ✅ 项目骨架（配置、模型、存储、隐私、服务器、CLI）
-Phase 2 ✅ 采集层（截图、窗口信息、去重、浏览器捕获）
-Phase 3 ✅ 检索层（FTS5、REST API、CLI recall）
-Phase 4 ✅ 处理层（VLM、Embedding、Sessionizer — 接口已实现，调用可选）
-Phase 5 ✅ 集成（浏览器扩展、MCP Server、测试、README）
+- **Windows GBK 编码**: Rich console 输出中文/Unicode 可能报错 → CLI 已强制 UTF-8
+- **pygetwindow 局限**: 某些窗口类型无法获取进程名 → Win32 API fallback
+- **WSL2 截图**: WSL2 无法截取 Windows 桌面 → 必须在 Windows 原生 Python 运行
