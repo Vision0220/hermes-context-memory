@@ -406,11 +406,10 @@ class Storage:
         return [dict(r) for r in rows]
 
     def search_fts(self, query: str, limit: int = 20) -> List[dict]:
-        """FTS5 全文搜索。CJK 查询自动退化为 LIKE。"""
+        """FTS5 全文搜索。CJK 查询自动退化为关键词 LIKE 搜索。"""
         conn = self.connect()
         has_cjk = any('一' <= c <= '鿿' or '㐀' <= c <= '䶿' for c in query)
 
-        # 对 CJK 查询直接用 LIKE（FTS5 不支持中文分词）
         if not has_cjk:
             try:
                 rows = conn.execute(
@@ -425,34 +424,84 @@ class Storage:
                 if rows:
                     return [dict(r) for r in rows]
             except sqlite3.OperationalError:
-                pass  # FTS 不可用，继续 LIKE
+                pass
 
-        # LIKE fallback（支持 CJK 和 FTS5 无结果的情况）
-        rows = conn.execute(
-            """SELECT * FROM raw_events
-               WHERE app_name LIKE ? OR window_title LIKE ? OR url LIKE ?
-                  OR ocr_text LIKE ? OR vlm_summary LIKE ?
-               ORDER BY ts DESC LIMIT ?""",
-            (f"%{query}%",) * 5 + (limit,),
-        ).fetchall()
-        # 也搜索浏览器事件
-        browser_rows = conn.execute(
-            """SELECT id, ts, browser as app_name, title as window_title, url, domain,
-                      NULL as screenshot_path, NULL as image_hash, NULL as duplicate_of,
-                      NULL as ocr_text, NULL as vlm_summary, NULL as vlm_json,
-                      0 as sensitive, created_at, 0 as monitor_id,
-                      'completed' as processing_status, NULL as image_width, NULL as image_height,
-                      NULL as reused_from_event_id, NULL as skip_reason,
-                      'browser' as source
-               FROM browser_events
-               WHERE title LIKE ? OR url LIKE ? OR domain LIKE ?
-               ORDER BY ts DESC LIMIT ?""",
-            (f"%{query}%",) * 3 + (limit,),
-        ).fetchall()
-        combined = [dict(r) for r in rows] + [dict(r) for r in browser_rows]
-        # 按时间排序
-        combined.sort(key=lambda r: r.get("ts", ""), reverse=True)
-        return combined[:limit]
+        # CJK 关键词提取：2-gram 分词 + 去停用词
+        if has_cjk:
+            keywords = self._extract_cjk_keywords(query)
+        else:
+            keywords = [query]
+
+        if not keywords:
+            return []
+
+        # 对每个关键词做 LIKE 搜索，合并去重，按匹配数排序
+        seen = {}
+        for kw in keywords:
+            if len(kw) < 1:
+                continue
+            rows = conn.execute(
+                """SELECT * FROM raw_events
+                   WHERE app_name LIKE ? OR window_title LIKE ? OR url LIKE ?
+                      OR ocr_text LIKE ? OR vlm_summary LIKE ?
+                   ORDER BY ts DESC LIMIT ?""",
+                (f"%{kw}%",) * 5 + (limit,),
+            ).fetchall()
+            for r in rows:
+                r = dict(r)
+                rid = r.get("id", "")
+                if rid not in seen:
+                    seen[rid] = {"row": r, "hits": 0}
+                seen[rid]["hits"] += 1
+
+            # 搜索浏览器事件
+            browser_rows = conn.execute(
+                """SELECT id, ts, browser as app_name, title as window_title, url, domain,
+                          'browser' as source, created_at
+                   FROM browser_events
+                   WHERE title LIKE ? OR url LIKE ? OR domain LIKE ?
+                   ORDER BY ts DESC LIMIT ?""",
+                (f"%{kw}%",) * 3 + (limit,),
+            ).fetchall()
+            for r in browser_rows:
+                r = dict(r)
+                rid = r.get("id", "")
+                if rid not in seen:
+                    seen[rid] = {"row": r, "hits": 0}
+                seen[rid]["hits"] += 1
+
+        # 按匹配关键词数降序排列
+        results = sorted(seen.values(), key=lambda x: x["hits"], reverse=True)
+        return [r["row"] for r in results[:limit]]
+
+    def _extract_cjk_keywords(self, query: str) -> List[str]:
+        """从 CJK 查询中提取关键词（简单 2-gram + 去停用词）。"""
+        # 停用词
+        stops = set("的了是在有不人大中上为这个们这来和到说就也出会能对可你着"
+                     "那得地而过子下么她好将把当只与让给被又从去已经"
+                     "刚才什么哪个怎我")
+        # 提取连续 CJK 字符
+        cjk_chars = [c for c in query if '一' <= c <= '鿿' or '㐀' <= c <= '䶿']
+        if not cjk_chars:
+            return [query]
+
+        # 2-gram
+        bigrams = set()
+        for i in range(len(cjk_chars) - 1):
+            bg = cjk_chars[i] + cjk_chars[i + 1]
+            if bg not in stops and not all(c in stops for c in bg):
+                bigrams.add(bg)
+
+        # 单字符（非停用）
+        singles = set()
+        for c in cjk_chars:
+            if c not in stops and len(c) == 1:
+                singles.add(c)
+
+        # 合并，优先 bigrams
+        keywords = list(bigrams) + list(singles)
+        # 限制数量避免过多查询
+        return keywords[:10]
 
     def delete_events(self, conditions: dict) -> int:
         """按条件删除事件，返回删除数量。"""
