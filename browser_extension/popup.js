@@ -1,11 +1,35 @@
 /**
  * Hermes Context Memory — Popup 脚本
  *
- * 主动查询后端 /health 和 /api/status，同时读取 storage 缓存。
- * 如果后端不可用，显示明确的断开信息和错误原因。
+ * 主动查询后端 /health 和 /api/status。
+ * 防御性检查 chrome.storage 是否可用。
  */
 
 const API_BASES = ["http://127.0.0.1:1833", "http://localhost:1833"];
+
+// 安全读取 storage
+function storageGet(keys) {
+  return new Promise((resolve) => {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(keys, resolve);
+      } else {
+        resolve({});
+      }
+    } catch {
+      resolve({});
+    }
+  });
+}
+
+// 安全写入 storage
+function storageSet(data) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set(data);
+    }
+  } catch {}
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   const statusEl = document.getElementById("status");
@@ -15,27 +39,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   const lastUrlEl = document.getElementById("lastUrl");
   const debugEl = document.getElementById("debugOutput");
 
-  // 1. 先从 storage 读缓存（快速显示）
-  try {
-    const cached = await chrome.storage.local.get([
-      "connected", "lastUrl", "lastTitle", "lastSent", "lastError",
-    ]);
-    if (cached.connected) {
-      setStatus("connected", "Connecting...");
-    } else if (cached.lastError) {
-      setStatus("disconnected", cached.lastError);
-    }
-    if (cached.lastUrl) {
-      const time = cached.lastSent
-        ? new Date(cached.lastSent).toLocaleTimeString("zh-CN")
-        : "";
-      lastUrlEl.textContent = `${time} ${cached.lastTitle || ""}\n${cached.lastUrl}`;
-    }
-  } catch (e) {
-    // storage 可能不可用
+  // 1. 从 storage 读缓存（快速显示）
+  const cached = await storageGet(["connected", "lastUrl", "lastTitle", "lastSent", "lastError"]);
+  if (cached.connected) {
+    setStatus("connected", "Connecting...");
+  } else if (cached.lastError) {
+    setStatus("disconnected", cached.lastError);
+  }
+  if (cached.lastUrl) {
+    const time = cached.lastSent
+      ? new Date(cached.lastSent).toLocaleTimeString("zh-CN")
+      : "";
+    lastUrlEl.textContent = `${time} ${cached.lastTitle || ""}\n${cached.lastUrl}`;
   }
 
-  // 2. 主动查询后端（真实状态）
+  // 2. 主动查询后端
   await queryBackend();
 
   // 3. Test Connection 按钮
@@ -47,70 +65,58 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  async function queryBackend(showDebug = false) {
+  async function queryBackend(showDebug) {
     let lastErr = "";
     for (const base of API_BASES) {
       try {
-        // Health check
-        const healthResp = await fetch(`${base}/health`, {
+        const healthResp = await fetch(base + "/health", {
           signal: AbortSignal.timeout(5000),
         });
         if (!healthResp.ok) {
-          lastErr = `HTTP ${healthResp.status}`;
+          lastErr = "HTTP " + healthResp.status;
           continue;
         }
         const health = await healthResp.json();
 
-        // Status (may fail, that's ok)
-        let status = null;
+        let statusData = null;
         try {
-          const statusResp = await fetch(`${base}/api/status`, {
+          const statusResp = await fetch(base + "/api/status", {
             signal: AbortSignal.timeout(5000),
           });
-          if (statusResp.ok) status = await statusResp.json();
+          if (statusResp.ok) statusData = await statusResp.json();
         } catch {}
 
-        // Update UI
         setStatus("connected", "Service Connected");
 
-        let details = `Status: ${health.status} | DB: ${health.database}`;
-        details += ` | Events: ${health.total_events}`;
-        details += ` | Sessions: ${health.total_sessions}`;
-        details += ` | Capture: ${health.capture_active ? "ON" : "OFF"}`;
-        details += ` | VLM: ${health.vlm_available ? "ON" : "OFF"}`;
-        detailsEl.textContent = details;
+        var info = "Status: " + health.status + " | DB: " + health.database;
+        info += " | Events: " + health.total_events;
+        info += " | Sessions: " + health.total_sessions;
+        info += " | Capture: " + (health.capture_active ? "ON" : "OFF");
+        info += " | VLM: " + (health.vlm_available ? "ON" : "OFF");
+        detailsEl.textContent = info;
 
         if (showDebug) {
           debugEl.textContent = JSON.stringify(health, null, 2);
         }
 
-        // Save to storage
-        chrome.storage.local.set({
-          connected: true,
-          lastError: "",
-          apiUrl: base,
-        });
+        storageSet({ connected: true, lastError: "", apiUrl: base });
         return;
       } catch (err) {
         lastErr = err.message || "Network error";
       }
     }
 
-    // All bases failed
-    setStatus("disconnected", `Disconnected: ${lastErr}`);
-    detailsEl.textContent = `Tried: ${API_BASES.join(", ")}`;
+    setStatus("disconnected", "Disconnected: " + lastErr);
+    detailsEl.textContent = "Tried: " + API_BASES.join(", ");
     if (showDebug) {
-      debugEl.textContent = `Error: ${lastErr}\nEndpoints: ${API_BASES.join(", ")}`;
+      debugEl.textContent = "Error: " + lastErr + "\nEndpoints: " + API_BASES.join(", ");
     }
-    chrome.storage.local.set({
-      connected: false,
-      lastError: lastErr,
-    });
+    storageSet({ connected: false, lastError: lastErr });
   }
 
   function setStatus(state, text) {
-    statusEl.className = `status ${state}`;
-    dotEl.className = `dot ${state === "connected" ? "green" : "red"}`;
+    statusEl.className = "status " + state;
+    dotEl.className = "dot " + (state === "connected" ? "green" : "red");
     statusTextEl.textContent = text;
   }
 });
