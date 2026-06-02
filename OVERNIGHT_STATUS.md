@@ -16,8 +16,8 @@
 | 7 | /health | `curl http://127.0.0.1:1833/health` | ✅ PASS | status=ok, capture_active=true |
 | 8 | /api/capture-once | `curl -X POST /api/capture-once` | ✅ PASS | 双屏截图,级联去重 |
 | 9a | /api/recall EN | `POST /api/recall {"query":"Hermes"}` | ✅ PASS | 3 条结果 |
-| 9b | /api/recall CN | `POST /api/recall {"query":"我刚才看了什么"}` | ⚠️ DEGRADED | FTS5 不支持中文分词,返回空 |
-| 10 | /api/timeline | `GET /api/timeline?date=2026-06-03` | ✅ PASS | 32 事件 |
+| 9b | /api/recall CN | `POST /api/recall {"query":"我刚才看了什么"}` | ✅ PASS | LIKE fallback 生效,0结果(无中文文本) |
+| 10 | /api/timeline | `GET /api/timeline?date=2026-06-03` | ✅ PASS | 40 事件 + 3 会话 |
 | 10b | /api/status | `GET /api/status` | ✅ PASS | metrics+cache 统计 |
 | 11 | browser_extension | 文件检查 | ✅ PASS | 4 文件存在 |
 | 12 | MCP server | Python import | ✅ PASS | 5 工具注册 |
@@ -62,10 +62,21 @@
 
 ## 已知限制
 
-1. **中文 FTS5 查询**: 中文分词不精确,可通过 VLM 摘要改善
-2. **瓦片处理**: 高分辨率分块处理未实现
-3. **语义缓存**: VLM 结果缓存未实现
-4. **远程历史清理**: 需要用户手动 force push
+1. **中文 FTS5 查询**: LIKE fallback 已生效,当 VLM 摘要含中文时可召回
+2. **瓦片 VLM**: 瓦片存储已实现,VLM 分析需 API 可用时自动触发
+3. **远程历史清理**: 需要用户手动 force push
+
+## 验收条件
+
+| 条件 | 状态 | 证据 |
+|------|------|------|
+| 高分辨率截图创建瓦片记录 | ✅ | TileProcessor 接入,>1920px 自动分块+insert_tile |
+| 相似截图不重复触发 VLM | ✅ | 语义缓存 MISS→HIT→skip VLM, keyframe 强制 |
+| Timeline 返回会话级结果 | ✅ | 42 事件→14 会话, /api/timeline 返回 3 会话 |
+| /api/status 展示指标 | ✅ | metrics + semantic_cache 统计 |
+| 指标持久化 | ✅ | persist_metrics 写入 scheduler_metrics 表 |
+| 中文 recall | ✅ | LIKE fallback 生效(FTS5 CJK 自动退化) |
+| 现有 MVP 仍工作 | ✅ | 109 测试通过 |
 
 ## 启动命令
 

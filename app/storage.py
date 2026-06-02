@@ -406,29 +406,53 @@ class Storage:
         return [dict(r) for r in rows]
 
     def search_fts(self, query: str, limit: int = 20) -> List[dict]:
-        """FTS5 全文搜索。"""
+        """FTS5 全文搜索。CJK 查询自动退化为 LIKE。"""
         conn = self.connect()
-        try:
-            rows = conn.execute(
-                """SELECT raw_events.*, rank
-                   FROM events_fts
-                   JOIN raw_events ON events_fts.id = raw_events.id
-                   WHERE events_fts MATCH ?
-                   ORDER BY rank
-                   LIMIT ?""",
-                (query, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            # FTS 不可用时，退化为 LIKE 搜索
-            rows = conn.execute(
-                """SELECT * FROM raw_events
-                   WHERE app_name LIKE ? OR window_title LIKE ? OR url LIKE ?
-                      OR ocr_text LIKE ? OR vlm_summary LIKE ?
-                   ORDER BY ts DESC LIMIT ?""",
-                (f"%{query}%",) * 5 + (limit,),
-            ).fetchall()
-            return [dict(r) for r in rows]
+        has_cjk = any('一' <= c <= '鿿' or '㐀' <= c <= '䶿' for c in query)
+
+        # 对 CJK 查询直接用 LIKE（FTS5 不支持中文分词）
+        if not has_cjk:
+            try:
+                rows = conn.execute(
+                    """SELECT raw_events.*, rank
+                       FROM events_fts
+                       JOIN raw_events ON events_fts.id = raw_events.id
+                       WHERE events_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (query, limit),
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass  # FTS 不可用，继续 LIKE
+
+        # LIKE fallback（支持 CJK 和 FTS5 无结果的情况）
+        rows = conn.execute(
+            """SELECT * FROM raw_events
+               WHERE app_name LIKE ? OR window_title LIKE ? OR url LIKE ?
+                  OR ocr_text LIKE ? OR vlm_summary LIKE ?
+               ORDER BY ts DESC LIMIT ?""",
+            (f"%{query}%",) * 5 + (limit,),
+        ).fetchall()
+        # 也搜索浏览器事件
+        browser_rows = conn.execute(
+            """SELECT id, ts, browser as app_name, title as window_title, url, domain,
+                      NULL as screenshot_path, NULL as image_hash, NULL as duplicate_of,
+                      NULL as ocr_text, NULL as vlm_summary, NULL as vlm_json,
+                      0 as sensitive, created_at, 0 as monitor_id,
+                      'completed' as processing_status, NULL as image_width, NULL as image_height,
+                      NULL as reused_from_event_id, NULL as skip_reason,
+                      'browser' as source
+               FROM browser_events
+               WHERE title LIKE ? OR url LIKE ? OR domain LIKE ?
+               ORDER BY ts DESC LIMIT ?""",
+            (f"%{query}%",) * 3 + (limit,),
+        ).fetchall()
+        combined = [dict(r) for r in rows] + [dict(r) for r in browser_rows]
+        # 按时间排序
+        combined.sort(key=lambda r: r.get("ts", ""), reverse=True)
+        return combined[:limit]
 
     def delete_events(self, conditions: dict) -> int:
         """按条件删除事件，返回删除数量。"""
