@@ -9,24 +9,27 @@
 
 ## 技术债务
 
-### 高优先级
+### 高优先级 (已完成)
+1. ✅ **瓦片处理**: TileProcessor 实现，大图分块+变化检测+文本密度
+2. ✅ **语义缓存**: SemanticCache 实现，LRU 淘汰，TTL 过期
+3. ✅ **会话聚合**: sessionize_events 实现，事件→活动会话
+4. ✅ **调度器指标**: SchedulerMetrics 实现，/api/status 和 /ui 展示
+
+### 高优先级 (待完成)
 1. **中文 FTS5 分词**: SQLite FTS5 默认不支持中文分词,搜索中文关键词返回空
    - 方案: 使用 jieba 分词预处理,或 VLM 摘要中生成英文关键词
-2. **瓦片处理**: 5120x2160 图片应分块处理,只处理变化瓦片
-   - 方案: 4x3 grid, 只对 text_density > 阈值的瓦片调用 VLM
-3. **语义缓存**: 相同截图重复调用 VLM
-   - 方案: 以 thumbnail_md5 为 key 缓存 VLM 结果
+2. **瓦片 VLM 集成**: TileProcessor 已实现但未接入主采集循环
+   - 需要在 capture_loop 中检测高分辨率→分块→选择重要瓦片→逐块 VLM
 
 ### 中优先级
-4. **sessionizer 集成**: 事件→会话聚合模块存在但未接入管线
-5. **scheduler_metrics**: 调度器指标记录表已建但未写入
-6. **VLM 超时处理**: 如果 VLM 响应 >60s,采集循环会阻塞
+3. **sessionizer 接入管线**: 模块已实现，需要在采集循环中定期调用
+4. **timeline API 展示会话**: /api/timeline 已返回 sessions，但需要验证数据流
+5. **VLM 超时处理**: 如果 VLM 响应 >60s,采集循环会阻塞
    - 方案: 用 asyncio.wait_for 包装,超时则 fallback
 
 ### 低优先级
-7. **sqlite-vec 向量检索**: 模块存在但未在 search.py 中集成
-8. **截图目录按 monitor_id 分目录**: 当前所有截图在同一目录
-9. **浏览器扩展 popup 实时刷新**: 当前 popup 只在打开时读取一次状态
+6. **sqlite-vec 向量检索**: 模块存在但未在 search.py 中集成
+7. **截图目录按 monitor_id 分目录**: 当前所有截图在同一目录
 
 ## 环境特定问题
 

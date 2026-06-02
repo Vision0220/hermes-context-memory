@@ -26,6 +26,8 @@ from app.capture.window import get_active_window
 from app.capture.dedup import CascadeDeduplicator
 from app.capture.browser import parse_browser_event
 from app.capture.idle import get_idle_level, compute_adaptive_interval, IdleLevel
+from app.capture.metrics import SchedulerMetrics
+from app.processing.semantic_cache import SemanticCache
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,8 @@ router = APIRouter()
 _deduplicator: Optional[CascadeDeduplicator] = None
 _capture_active = False
 _vlm_queue: Optional[asyncio.Queue] = None
+_metrics = SchedulerMetrics()
+_semantic_cache = SemanticCache(max_size=500, ttl_seconds=600)
 
 
 # ── 健康检查 ────────────────────────────────────────────────────
@@ -92,7 +96,6 @@ async def api_status():
 
     idle_level = "unknown"
     try:
-        from app.capture.idle import get_idle_level
         idle_level = get_idle_level().name
     except Exception:
         pass
@@ -105,6 +108,9 @@ async def api_status():
             "pressure": round(_vlm_queue.qsize() / _vlm_queue.maxsize, 2),
         }
 
+    # 调度器指标
+    snap = _metrics.snapshot()
+
     return {
         "status": "running",
         "version": "0.2.0",
@@ -116,6 +122,8 @@ async def api_status():
             "vlm": {"enabled": config.models.vlm.enabled, "model": config.models.vlm.model},
             "embedding": {"enabled": config.models.embedding.enabled, "model": config.models.embedding.model},
         },
+        "metrics": snap.to_dict(),
+        "semantic_cache": _semantic_cache.get_stats(),
     }
 
 
@@ -249,6 +257,8 @@ async def ui_page():
     emb_masked = (emb_key[:8] + "***") if len(emb_key) > 8 else "***"
     queue_depth = _vlm_queue.qsize() if _vlm_queue else 0
     queue_max = _vlm_queue.maxsize if _vlm_queue else 0
+    snap = _metrics.snapshot()
+    cache_stats = _semantic_cache.get_stats()
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Hermes Context Memory</title>
 <style>
 body{{font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px;background:#0d1117;color:#c9d1d9}}
@@ -303,6 +313,23 @@ function doAction(url, method) {{
 Excluded apps: {', '.join(config.privacy.excluded_apps[:5])}...<br>
 Excluded domains: {', '.join(config.privacy.excluded_domains)}
 </div>
+<h2>Scheduler Metrics</h2>
+<div class="card"><table>
+<tr><td>Captures</td><td>{snap.captures_total}</td></tr>
+<tr><td>Skipped</td><td>{snap.duplicates_skipped} ({snap.skip_rate:.0%})</td></tr>
+<tr><td>VLM Processed</td><td>{snap.vlm_processed} (avg {snap.avg_vlm_latency_ms:.0f}ms)</td></tr>
+<tr><td>Embedding</td><td>{snap.embedding_processed} (avg {snap.avg_embedding_latency_ms:.0f}ms)</td></tr>
+<tr><td>Queue</td><td>{snap.queue_depth}/{snap.queue_maxsize} ({snap.queue_pressure:.0%})</td></tr>
+<tr><td>Interval</td><td>{snap.current_interval:.0f}s</td></tr>
+<tr><td>Idle Level</td><td>{snap.idle_level}</td></tr>
+<tr><td>Skip Reasons</td><td>{snap.skip_reasons}</td></tr>
+</table></div>
+<h2>Semantic Cache</h2>
+<div class="card"><table>
+<tr><td>Size</td><td>{cache_stats['size']}/{cache_stats['max_size']}</td></tr>
+<tr><td>Hit Rate</td><td>{cache_stats['hit_rate']:.0%}</td></tr>
+<tr><td>Hits / Misses</td><td>{cache_stats['hits']} / {cache_stats['misses']}</td></tr>
+</table></div>
 </body></html>"""
 
 @router.post("/api/recall", response_model=RecallResponse)
@@ -384,7 +411,7 @@ class _VLMTask:
 
 
 async def _vlm_worker(config: AppConfig):
-    """VLM 后台处理工作线程。从队列取任务，调用 VLM 分析，更新 DB。"""
+    """VLM 后台处理工作线程。含语义缓存和指标记录。"""
     storage = get_storage()
 
     while True:
@@ -395,6 +422,22 @@ async def _vlm_worker(config: AppConfig):
                 _vlm_queue.task_done()
                 continue
 
+            # 语义缓存检查
+            cached = _semantic_cache.lookup(
+                app_name=task.app_name,
+                window_title=task.window_title,
+                url="",
+                thumbnail_md5=task.event_id[:16],  # 简化 key
+            )
+            if cached:
+                storage.update_event_fields(task.event_id, {
+                    "vlm_summary": cached.vlm_summary,
+                    "processing_status": "completed",
+                })
+                _metrics.record_skip("semantic_cache")
+                _vlm_queue.task_done()
+                continue
+
             # 标记为处理中
             storage.update_event_fields(task.event_id, {"processing_status": "processing"})
 
@@ -402,14 +445,18 @@ async def _vlm_worker(config: AppConfig):
             from app.processing.vlm import analyze_screenshot
             from pathlib import Path
             from app.processing.ocr import get_ocr_engine
+            import time
 
             ocr_engine = get_ocr_engine("noop")
             ocr_text = ocr_engine.extract_text(Path(task.screenshot_path))
 
+            vlm_start = time.time()
             vlm_result = await analyze_screenshot(
                 Path(task.screenshot_path), config,
                 task.app_name, task.window_title, ocr_text,
             )
+            vlm_latency = int((time.time() - vlm_start) * 1000)
+            _metrics.record_vlm(vlm_latency, vlm_result is not None)
 
             update_fields = {}
             if ocr_text:
@@ -417,20 +464,31 @@ async def _vlm_worker(config: AppConfig):
             if vlm_result:
                 update_fields["vlm_summary"] = vlm_result.summary_zh
                 update_fields["vlm_json"] = vlm_result.model_dump_json()
+                # 存入语义缓存
+                _semantic_cache.store(
+                    app_name=task.app_name,
+                    window_title=task.window_title,
+                    url="",
+                    thumbnail_md5=task.event_id[:16],
+                    vlm_summary=vlm_result.summary_zh,
+                    event_id=task.event_id,
+                )
             update_fields["processing_status"] = "completed"
-
             storage.update_event_fields(task.event_id, update_fields)
 
             # Embedding（如果可用）
             if config.models.embedding.enabled and vlm_result:
                 from app.processing.embedding import get_embedding
                 text = f"{task.app_name} {task.window_title} {vlm_result.summary_zh}"
+                emb_start = time.time()
                 embedding = await get_embedding(text, config)
+                emb_latency = int((time.time() - emb_start) * 1000)
+                _metrics.record_embedding(emb_latency, embedding is not None)
                 if embedding:
                     from app.retrieval.vector import store_embedding
                     store_embedding(storage.connect(), task.event_id, embedding)
 
-            logger.debug("VLM 处理完成: %s (%s)", task.event_id[:8], task.app_name)
+            logger.debug("VLM 处理完成: %s (%s) %dms", task.event_id[:8], task.app_name, vlm_latency)
 
         except asyncio.CancelledError:
             break
@@ -500,6 +558,12 @@ async def capture_loop(config: AppConfig):
                 queue_pressure = _vlm_queue.qsize() / _vlm_queue.maxsize
 
             interval = compute_adaptive_interval(base_interval, idle_level, queue_pressure)
+            _metrics.update_interval(interval, idle_level.name)
+            _metrics.update_queue(
+                depth=_vlm_queue.qsize() if _vlm_queue else 0,
+                maxsize=_vlm_queue.maxsize if _vlm_queue else 0,
+                pressure=queue_pressure,
+            )
             await asyncio.sleep(interval)
 
             # 获取窗口信息
@@ -564,6 +628,7 @@ async def capture_loop(config: AppConfig):
                 event_id = storage.insert_event(event)
 
                 if not dedup_result.is_duplicate:
+                    _metrics.record_capture()
                     # 提交 VLM 异步处理
                     if config.models.vlm.enabled and _vlm_queue:
                         _enqueue_vlm(_VLMTask(
@@ -576,6 +641,7 @@ async def capture_loop(config: AppConfig):
                     logger.info("截图 [%d] %s | %s | dedup=%s",
                                 monitor_id, screenshot_path.name, app_name, dedup_result.stage)
                 else:
+                    _metrics.record_skip(dedup_result.stage)
                     logger.debug("重复 [%d] %s | dedup=%s",
                                  monitor_id, screenshot_path.name, dedup_result.stage)
 
