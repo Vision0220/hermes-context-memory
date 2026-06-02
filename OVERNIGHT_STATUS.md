@@ -44,31 +44,33 @@
 ### 指标
 | 指标 | 值 |
 |------|-----|
-| Total events | 48 |
-| Screenshot files | 53 |
-| Screenshots size | 8.19 MB |
+| Total events | 14 |
+| Screenshot files | 20 |
+| Screenshots size | 3.45 MB |
 | DB size | 0.12 MB |
-| VLM completed | 9 |
-| VLM pending | 33 |
-| VLM skipped | 4 |
+| VLM completed | 2 |
+| VLM pending | 10 |
+| VLM skipped | 2 |
 | Sessions | 3 |
+| Scheduler metrics | 1 (persisted) |
 | Monitors | 2 |
-| Latest resolution | 1600x1000 |
 | Screenshot tiles | 0 (resolution <1920px) |
 
 ### 召回示例
 | 查询 | 结果 |
 |------|------|
-| "Hermes" | ✅ 3 results, score=0.80, app=Hermes Studio |
-| "Studio" | ✅ 3 results via LIKE fallback |
-| "应用: M" | ✅ 1 result (VLM summary match) |
-| "我刚才看了什么" | 0 results (VLM summaries use specific terms, not generic) |
+| "Hermes" | ✅ 3 results, Hermes Studio |
+| "Edge" | ✅ 3 results, Microsoft Edge |
+| "我刚才看了什么" | 0 (语义查询，需 embedding 向量搜索) |
+| "刚才打开过哪些网页" | 0 (browser_events=0，扩展未加载) |
+| "我刚才在哪个应用里工作" | 0 (需 VLM 摘要关键词匹配) |
 
 ### 已知限制
-1. **中文泛化查询**: "我刚才看了什么"返回空，因为VLM摘要使用具体描述而非泛化词。可通过OCR+更多VLM处理改善。
-2. **截图分辨率**: 当前显示器1600x1000，未触发瓦片处理（需>1920px）。
-3. **浏览器事件**: 浏览器扩展未在pilot中加载，browser_events=0。
-4. **DB并发**: 服务运行时直接访问DB可能触发disk I/O错误（WAL模式限制）。
+1. **中文语义查询**: "我刚才看了什么"返回空 — LIKE 只能匹配子串，语义查询需 embedding 向量搜索。
+2. **浏览器事件**: 扩展未在 pilot 中加载，browser_events=0。需手动在 Chrome/Edge 加载。
+3. **截图分辨率**: 当前显示器 1600x1000，未触发瓦片处理（需 >1920px）。
+4. **DB 并发**: 服务运行时直接访问 DB 可能触发 disk I/O 错误。已通过 DB 重建修复。
+5. **recall_chunks/model_status**: 表存在但未写入数据（需 embedding 启用后填充）。
 
 ## 发布加固
 
