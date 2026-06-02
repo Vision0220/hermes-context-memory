@@ -42,6 +42,8 @@ class RawEvent(BaseModel):
     processing_status: str = "pending"  # pending / processing / completed / failed / skipped
     image_width: Optional[int] = None
     image_height: Optional[int] = None
+    reused_from_event_id: Optional[str] = None
+    skip_reason: Optional[str] = None
 
 
 # ── 浏览器事件 ──────────────────────────────────────────────────

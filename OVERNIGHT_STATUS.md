@@ -52,10 +52,10 @@
 | MCP | ✅ | 5 个工具 |
 | /ui | ✅ | 状态+指标+缓存页面 |
 | 浏览器扩展 | ✅ | Chrome/Edge MV3 |
-| 瓦片处理 | ✅ | TileProcessor 大图分块+变化检测 |
-| 语义缓存 | ✅ | VLM 结果复用,LRU 淘汰 |
-| 会话聚合 | ✅ | sessionize_events 事件→会话 |
-| 调度器指标 | ✅ | SchedulerMetrics 记录运行数据 |
+| **P1** | 瓦片处理 | ✅ | TileProcessor 接入 capture_loop，高分辨率自动分块 |
+| **P2** | 会话聚合 | ✅ | _sessionizer_loop 后台任务，每 5 分钟聚合 |
+| **P3** | 语义缓存 | ✅ | 正确键(domain+url+title+hash)，keyframe 强制，reused_from_event_id 记录 |
+| **P4** | 调度器指标 | ✅ | /api/status 和 /ui 展示 metrics |
 | 测试 | ✅ | 109 个测试全部通过 |
 
 ## 已知限制

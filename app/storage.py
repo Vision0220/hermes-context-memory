@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS raw_events (
     monitor_id INTEGER DEFAULT 0,
     processing_status TEXT DEFAULT 'pending',
     image_width INTEGER,
-    image_height INTEGER
+    image_height INTEGER,
+    reused_from_event_id TEXT,
+    skip_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS browser_events (
@@ -183,6 +185,8 @@ class Storage:
             "ALTER TABLE raw_events ADD COLUMN processing_status TEXT DEFAULT 'pending'",
             "ALTER TABLE raw_events ADD COLUMN image_width INTEGER",
             "ALTER TABLE raw_events ADD COLUMN image_height INTEGER",
+            "ALTER TABLE raw_events ADD COLUMN reused_from_event_id TEXT",
+            "ALTER TABLE raw_events ADD COLUMN skip_reason TEXT",
         ]
         for sql in _migrations:
             try:
@@ -218,16 +222,19 @@ class Storage:
         d.setdefault("processing_status", "pending")
         d.setdefault("image_width", None)
         d.setdefault("image_height", None)
+        d.setdefault("reused_from_event_id", None)
+        d.setdefault("skip_reason", None)
         conn.execute(
             """INSERT OR REPLACE INTO raw_events
                (id, ts, source, app_name, process_name, window_title, url, domain,
                 screenshot_path, image_hash, duplicate_of, ocr_text, vlm_summary,
                 vlm_json, sensitive, created_at, monitor_id, processing_status,
-                image_width, image_height)
+                image_width, image_height, reused_from_event_id, skip_reason)
                VALUES (:id, :ts, :source, :app_name, :process_name, :window_title,
                        :url, :domain, :screenshot_path, :image_hash, :duplicate_of,
                        :ocr_text, :vlm_summary, :vlm_json, :sensitive, :created_at,
-                       :monitor_id, :processing_status, :image_width, :image_height)""",
+                       :monitor_id, :processing_status, :image_width, :image_height,
+                       :reused_from_event_id, :skip_reason)""",
             d,
         )
         conn.commit()
@@ -269,6 +276,33 @@ class Storage:
         rows = conn.execute(
             "SELECT * FROM raw_events WHERE processing_status = 'pending' AND sensitive = 0 ORDER BY ts DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_tile(self, tile_data: dict) -> str:
+        """插入一条瓦片记录。"""
+        conn = self.connect()
+        from datetime import datetime
+        tile_data.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
+        conn.execute(
+            """INSERT OR REPLACE INTO screenshot_tiles
+               (id, event_id, tile_row, tile_col, tile_path, tile_hash,
+                changed, text_density, vlm_summary, created_at)
+               VALUES (:id, :event_id, :tile_row, :tile_col, :tile_path, :tile_hash,
+                        :changed, :text_density, :vlm_summary, :created_at)""",
+            tile_data,
+        )
+        conn.commit()
+        return tile_data.get("id", "")
+
+    def get_recent_sessions(self, minutes: int = 60) -> List[dict]:
+        """获取最近的活动会话。"""
+        conn = self.connect()
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        rows = conn.execute(
+            "SELECT * FROM activity_sessions WHERE ts_start >= ? ORDER BY ts_start DESC LIMIT 50",
+            (cutoff,),
         ).fetchall()
         return [dict(r) for r in rows]
 

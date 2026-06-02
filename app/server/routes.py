@@ -401,12 +401,15 @@ async def forget(request: ForgetRequest):
 class _VLMTask:
     """VLM 处理任务。"""
     def __init__(self, event_id: str, screenshot_path: str,
-                 app_name: str, window_title: str, monitor_id: int):
+                 app_name: str, window_title: str, monitor_id: int,
+                 url: str = "", thumbnail_md5: str = ""):
         self.event_id = event_id
         self.screenshot_path = screenshot_path
         self.app_name = app_name
         self.window_title = window_title
         self.monitor_id = monitor_id
+        self.url = url
+        self.thumbnail_md5 = thumbnail_md5
         self.superseded = False
 
 
@@ -426,8 +429,8 @@ async def _vlm_worker(config: AppConfig):
             cached = _semantic_cache.lookup(
                 app_name=task.app_name,
                 window_title=task.window_title,
-                url="",
-                thumbnail_md5=task.event_id[:16],  # 简化 key
+                url=getattr(task, 'url', ''),
+                thumbnail_md5=getattr(task, 'thumbnail_md5', ''),
             )
             if cached:
                 storage.update_event_fields(task.event_id, {
@@ -468,8 +471,8 @@ async def _vlm_worker(config: AppConfig):
                 _semantic_cache.store(
                     app_name=task.app_name,
                     window_title=task.window_title,
-                    url="",
-                    thumbnail_md5=task.event_id[:16],
+                    url=getattr(task, 'url', ''),
+                    thumbnail_md5=getattr(task, 'thumbnail_md5', ''),
                     vlm_summary=vlm_result.summary_zh,
                     event_id=task.event_id,
                 )
@@ -517,15 +520,36 @@ def _enqueue_vlm(task: _VLMTask):
 
 # ── 采集循环（智能版）────────────────────────────────────────
 
+async def _sessionizer_loop(config: AppConfig, interval_minutes: int = 5):
+    """定期运行会话聚合。"""
+    storage = get_storage()
+    from app.processing.sessionizer import sessionize_events
+    while True:
+        try:
+            await asyncio.sleep(interval_minutes * 60)
+            events = storage.get_recent_events(minutes=interval_minutes + 1)
+            if len(events) < 2:
+                continue
+            sessions = sessionize_events(events, gap_minutes=5)
+            for s in sessions:
+                storage.insert_session(s)
+            if sessions:
+                logger.info("会话聚合: %d 事件 → %d 会话", len(events), len(sessions))
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("会话聚合出错: %s", e)
+            await asyncio.sleep(30)
+
+
 async def capture_loop(config: AppConfig):
-    """智能采集循环：多屏截图 + 级联去重 + 自适应频率 + VLM 异步处理。"""
+    """智能采集循环：多屏截图 + 级联去重 + 自适应频率 + 瓦片处理 + VLM 异步。"""
     global _capture_active, _deduplicator, _vlm_queue
     _capture_active = True
 
     storage = get_storage()
     privacy = PrivacyGuard(config)
 
-    # 初始化级联去重器
     dedup_cfg = config.capture.dedup
     _deduplicator = CascadeDeduplicator(
         hash_algorithm=dedup_cfg.hash_algorithm,
@@ -534,21 +558,30 @@ async def capture_loop(config: AppConfig):
         thumbnail_size=tuple(dedup_cfg.thumbnail_size),
     )
 
-    # 初始化 VLM 队列
     if config.models.vlm.enabled:
-        _vlm_queue = asyncio.Queue(maxsize=10)
+        _vlm_queue = asyncio.Queue(maxsize=50)
         asyncio.create_task(_vlm_worker(config))
 
+    # 启动会话聚合后台任务
+    asyncio.create_task(_sessionizer_loop(config))
+
+    # 瓦片处理器
+    from app.capture.tile import TileProcessor
+    tile_proc = TileProcessor(tile_width=1280, tile_height=720, overlap=64)
+
+    # 上一帧上下文（用于 keyframe 检测）
+    prev_app = {}
+    prev_title = {}
+    prev_hash = {}
+
     base_interval = config.capture.interval_seconds
-    logger.info("智能采集循环启动: interval=%ds, per_monitor=%s, vlm=%s",
-                base_interval, config.capture.per_monitor, config.models.vlm.enabled)
+    logger.info("智能采集循环启动: interval=%ds, per_monitor=%s, vlm=%s, tiles=%s",
+                base_interval, config.capture.per_monitor, config.models.vlm.enabled,
+                tile_proc is not None)
 
     while True:
         try:
-            # 计算自适应间隔
             idle_level = get_idle_level()
-
-            # L4 屏幕锁定 → 长睡
             if idle_level == IdleLevel.L4_PAUSED:
                 await asyncio.sleep(30)
                 continue
@@ -566,14 +599,12 @@ async def capture_loop(config: AppConfig):
             )
             await asyncio.sleep(interval)
 
-            # 获取窗口信息
             window_info = get_active_window()
             app_name = window_info.app_name if window_info else ""
             process_name = window_info.process_name if window_info else ""
             window_title = window_info.window_title if window_info else ""
             ts = datetime.now().isoformat(timespec="seconds")
 
-            # 隐私检查
             if privacy.is_sensitive(app_name, window_title):
                 event_data = privacy.create_sensitive_event(ts, app_name, window_title)
                 event_data["source"] = "screenshot"
@@ -582,7 +613,6 @@ async def capture_loop(config: AppConfig):
                 storage.insert_event(event)
                 continue
 
-            # 多屏截图
             if config.capture.per_monitor:
                 screenshots = capture_screens_multi(config)
             else:
@@ -593,7 +623,6 @@ async def capture_loop(config: AppConfig):
                 if not screenshot_path:
                     continue
 
-                # 级联去重
                 dedup_result = _deduplicator.check(
                     screenshot_path,
                     app_name=app_name,
@@ -601,35 +630,92 @@ async def capture_loop(config: AppConfig):
                     monitor_id=monitor_id,
                 )
 
-                # 获取图片尺寸
                 img_width, img_height = None, None
                 try:
-                    from PIL import Image
-                    with Image.open(str(screenshot_path)) as img:
-                        img_width, img_height = img.size
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(str(screenshot_path)) as _img:
+                        img_width, img_height = _img.size
                 except Exception:
                     pass
 
+                # Keyframe 检测: app/URL/title 变化 → 强制非重复
+                is_keyframe = False
+                pa = prev_app.get(monitor_id, "")
+                pt = prev_title.get(monitor_id, "")
+                if app_name and app_name != pa:
+                    is_keyframe = True
+                if window_title and window_title != pt:
+                    is_keyframe = True
+
+                if is_keyframe and dedup_result.is_duplicate:
+                    dedup_result.is_duplicate = False
+                    dedup_result.stage = "keyframe"
+
+                # 构建事件
                 event = RawEvent(
-                    ts=ts,
-                    source="screenshot",
-                    app_name=app_name,
-                    process_name=process_name,
+                    ts=ts, source="screenshot",
+                    app_name=app_name, process_name=process_name,
                     window_title=window_title,
                     screenshot_path=str(screenshot_path),
                     image_hash=dedup_result.thumbnail_md5,
                     duplicate_of=dedup_result.stage if dedup_result.is_duplicate else None,
-                    sensitive=False,
-                    monitor_id=monitor_id,
-                    image_width=img_width,
-                    image_height=img_height,
+                    sensitive=False, monitor_id=monitor_id,
+                    image_width=img_width, image_height=img_height,
                     processing_status="skipped" if dedup_result.is_duplicate else "pending",
                 )
+
+                # 语义缓存检查（去重通过后）
+                if not dedup_result.is_duplicate and config.models.vlm.enabled:
+                    cached = _semantic_cache.lookup(
+                        app_name=app_name,
+                        window_title=window_title,
+                        url="",
+                        thumbnail_md5=dedup_result.thumbnail_md5 or "",
+                    )
+                    if cached:
+                        event.vlm_summary = cached.vlm_summary
+                        event.processing_status = "completed"
+                        event.reused_from_event_id = cached.event_id
+                        event.skip_reason = "semantic_cache"
+                        _metrics.record_skip("semantic_cache")
+
                 event_id = storage.insert_event(event)
+
+                # 瓦片处理（高分辨率）
+                if not dedup_result.is_duplicate and img_width and img_width > 1920:
+                    try:
+                        from PIL import Image as _PILImage
+                        with _PILImage.open(str(screenshot_path)) as _img:
+                            if tile_proc.should_tile(_img):
+                                tiles = tile_proc.generate_tiles(_img)
+                                for tile in tiles:
+                                    tile_proc.compute_text_density(tile, _img)
+                                    tile_proc.compute_tile_hash(tile, _img)
+                                # 选择重要瓦片
+                                important = tile_proc.select_important_tiles(tiles, max_tiles=6)
+                                # 保存瓦片
+                                from pathlib import Path as _Path
+                                tile_dir = _Path(str(screenshot_path)).parent / f"tiles_{event_id[:8]}"
+                                tile_proc.save_tiles(important, _img, tile_dir)
+                                # 记录瓦片到 DB
+                                for tile in important:
+                                    storage.insert_tile({
+                                        "id": f"{event_id}_{tile.tile_id}",
+                                        "event_id": event_id,
+                                        "tile_row": tile.y // tile_proc.tile_height,
+                                        "tile_col": tile.x // tile_proc.tile_width,
+                                        "tile_path": tile.tile_path,
+                                        "tile_hash": tile.tile_hash,
+                                        "changed": 1 if tile.changed_score > 0.1 else 0,
+                                        "text_density": tile.text_density,
+                                    })
+                                logger.info("瓦片 [%d] %s: %d tiles saved",
+                                            monitor_id, screenshot_path.name, len(important))
+                    except Exception as e:
+                        logger.warning("瓦片处理失败: %s", e)
 
                 if not dedup_result.is_duplicate:
                     _metrics.record_capture()
-                    # 提交 VLM 异步处理
                     if config.models.vlm.enabled and _vlm_queue:
                         _enqueue_vlm(_VLMTask(
                             event_id=event_id,
@@ -637,6 +723,7 @@ async def capture_loop(config: AppConfig):
                             app_name=app_name,
                             window_title=window_title,
                             monitor_id=monitor_id,
+                            thumbnail_md5=dedup_result.thumbnail_md5 or "",
                         ))
                     logger.info("截图 [%d] %s | %s | dedup=%s",
                                 monitor_id, screenshot_path.name, app_name, dedup_result.stage)
@@ -644,6 +731,11 @@ async def capture_loop(config: AppConfig):
                     _metrics.record_skip(dedup_result.stage)
                     logger.debug("重复 [%d] %s | dedup=%s",
                                  monitor_id, screenshot_path.name, dedup_result.stage)
+
+                # 更新上一帧上下文
+                prev_app[monitor_id] = app_name
+                prev_title[monitor_id] = window_title
+                prev_hash[monitor_id] = dedup_result.thumbnail_md5
 
         except asyncio.CancelledError:
             logger.info("采集循环已停止")

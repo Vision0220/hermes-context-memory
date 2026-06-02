@@ -10,10 +10,10 @@
 ## 技术债务
 
 ### 高优先级 (已完成)
-1. ✅ **瓦片处理**: TileProcessor 实现，大图分块+变化检测+文本密度
-2. ✅ **语义缓存**: SemanticCache 实现，LRU 淘汰，TTL 过期
-3. ✅ **会话聚合**: sessionize_events 实现，事件→活动会话
-4. ✅ **调度器指标**: SchedulerMetrics 实现，/api/status 和 /ui 展示
+1. ✅ **瓦片处理**: TileProcessor + 主循环集成，高分辨率自动分块+变化检测+DB记录
+2. ✅ **语义缓存**: SemanticCache + 正确键(domain+url+title+hash) + keyframe 强制 + reused_from_event_id
+3. ✅ **会话聚合**: sessionize_events + _sessionizer_loop 后台任务
+4. ✅ **调度器指标**: SchedulerMetrics + /api/status 和 /ui 展示
 
 ### 高优先级 (待完成)
 1. **中文 FTS5 分词**: SQLite FTS5 默认不支持中文分词,搜索中文关键词返回空
