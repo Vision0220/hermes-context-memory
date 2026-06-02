@@ -9,6 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_config, init_config
 from app.storage import get_storage, close_storage
@@ -81,6 +82,15 @@ def create_app() -> FastAPI:
 
     from app.server.routes import router
     app.include_router(router)
+
+    # CORS：允许浏览器扩展和本地开发访问
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # 本地服务，允许所有来源
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     return app
 
