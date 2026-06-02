@@ -76,6 +76,44 @@ CREATE TABLE IF NOT EXISTS config_state (
     value TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS screenshot_tiles (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    tile_row INTEGER,
+    tile_col INTEGER,
+    tile_path TEXT,
+    tile_hash TEXT,
+    changed INTEGER DEFAULT 0,
+    text_density REAL DEFAULT 0.0,
+    vlm_summary TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    interval_seconds REAL,
+    idle_level TEXT,
+    queue_depth INTEGER,
+    queue_pressure REAL,
+    captures_total INTEGER DEFAULT 0,
+    duplicates_skipped INTEGER DEFAULT 0,
+    vlm_processed INTEGER DEFAULT 0,
+    vlm_failed INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS model_status (
+    model_type TEXT PRIMARY KEY,
+    enabled INTEGER DEFAULT 0,
+    base_url TEXT,
+    model_name TEXT,
+    status TEXT DEFAULT 'unknown',
+    last_warmup_ts TEXT,
+    warmup_latency_ms INTEGER,
+    last_error TEXT,
+    updated_at TEXT
+);
 """
 
 # FTS5 虚拟表 — 用于全文检索

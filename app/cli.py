@@ -283,8 +283,146 @@ def forget(
         return
 
     deleted = storage.delete_events(conditions)
-    console.print(f"[green]已删除 {deleted} 条记录及其关联截图。[/green]")
+    console.print(f"[green]Deleted {deleted} records and screenshots.[/green]")
     storage.close()
+
+
+@app.command()
+def doctor():
+    """诊断服务状态，含 secret 泄露扫描。"""
+    import re
+    from app.config import load_config, PROJECT_ROOT
+
+    console.print("[bold]Hermes Context Memory Doctor[/bold]\n")
+
+    issues = []
+
+    # 1. 检查 .git 中是否有 API key
+    console.print("  [Scanning] Checking for leaked secrets...")
+    secret_pattern = re.compile(r"sk-[a-zA-Z0-9]{20,}")
+    checked_files = 0
+    for f in PROJECT_ROOT.rglob("*"):
+        if ".git" in str(f) or "__pycache__" in str(f) or ".venv" in str(f):
+            continue
+        # 跳过 config.yaml（已在 .gitignore 中）
+        if f.name == "config.yaml":
+            continue
+        if f.is_file() and f.suffix in (".py", ".yaml", ".yml", ".json", ".md", ".toml"):
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+                matches = secret_pattern.findall(content)
+                if matches:
+                    for m in matches:
+                        issues.append(f"SECRET: {f.relative_to(PROJECT_ROOT)} contains key {m[:12]}...")
+            except Exception:
+                pass
+            checked_files += 1
+
+    if not any("SECRET" in i for i in issues):
+        console.print("  [OK] No API keys found in tracked files")
+    else:
+        for issue in issues:
+            if "SECRET" in issue:
+                console.print(f"  [WARN] {issue}")
+
+    # 2. 检查 config.yaml 是否在 .gitignore
+    gitignore = PROJECT_ROOT / ".gitignore"
+    if gitignore.exists():
+        gi_content = gitignore.read_text(encoding="utf-8", errors="ignore")
+        if "config.yaml" in gi_content:
+            console.print("  [OK] config.yaml in .gitignore")
+        else:
+            console.print("  [WARN] config.yaml NOT in .gitignore")
+            issues.append("config.yaml not in .gitignore")
+
+    # 3. 检查 .env.local
+    env_local = PROJECT_ROOT / ".env.local"
+    if env_local.exists():
+        console.print("  [OK] .env.local exists")
+    else:
+        console.print("  [INFO] .env.local not found (using config.yaml)")
+
+    # 4. 检查数据目录
+    from app.config import DATA_DIR
+    if DATA_DIR.exists():
+        console.print(f"  [OK] Data dir: {DATA_DIR}")
+    else:
+        console.print(f"  [WARN] Data dir missing: {DATA_DIR}")
+
+    # 5. 检查数据库
+    try:
+        from app.storage import Storage
+        s = Storage()
+        s.init_db()
+        status = s.get_status()
+        console.print(f"  [OK] Database: {status['raw_events']} events")
+        s.close()
+    except Exception as e:
+        console.print(f"  [ERR] Database: {e}")
+        issues.append(f"Database error: {e}")
+
+    # 6. 检查截图依赖
+    try:
+        import mss
+        console.print("  [OK] mss (screenshot) available")
+    except ImportError:
+        console.print("  [ERR] mss not installed")
+        issues.append("mss not installed")
+
+    try:
+        from PIL import Image
+        console.print("  [OK] Pillow available")
+    except ImportError:
+        console.print("  [ERR] Pillow not installed")
+
+    try:
+        import imagehash
+        console.print("  [OK] imagehash available")
+    except ImportError:
+        console.print("  [WARN] imagehash not installed (dedup degraded)")
+
+    # 7. 检查 API 连通性
+    config = load_config()
+    if config.models.vlm.enabled:
+        console.print(f"  [INFO] VLM: {config.models.vlm.model} @ {config.models.vlm.base_url}")
+    if config.models.embedding.enabled:
+        console.print(f"  [INFO] Embedding: {config.models.embedding.model} @ {config.models.embedding.base_url}")
+
+    # 总结
+    console.print(f"\n  Files scanned: {checked_files}")
+    if issues:
+        console.print(f"  [yellow]Issues found: {len(issues)}[/yellow]")
+    else:
+        console.print("  [green]All checks passed![/green]")
+
+
+@app.command()
+def warmup():
+    """预热 VLM 和 Embedding 模型。"""
+    import asyncio
+    from app.config import load_config
+
+    config = load_config()
+    console.print("[bold]Warming up models...[/bold]\n")
+
+    async def _warmup():
+        if config.models.vlm.enabled:
+            from app.processing.vlm import warmup_vlm
+            console.print(f"  VLM: {config.models.vlm.model}...")
+            ok = await warmup_vlm(config)
+            console.print(f"  {'[OK]' if ok else '[FAIL]'} VLM warmup")
+        else:
+            console.print("  VLM: disabled")
+
+        if config.models.embedding.enabled:
+            from app.processing.embedding import warmup_embedding
+            console.print(f"  Embedding: {config.models.embedding.model}...")
+            ok = await warmup_embedding(config)
+            console.print(f"  {'[OK]' if ok else '[FAIL]'} Embedding warmup")
+        else:
+            console.print("  Embedding: disabled")
+
+    asyncio.run(_warmup())
 
 
 def main():

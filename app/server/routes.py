@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Query
+from fastapi.responses import HTMLResponse
 
 from app.config import AppConfig, load_config
 from app.models import (
@@ -80,7 +81,221 @@ async def receive_browser_event(data: dict):
     return {"status": "ok", "id": event_id}
 
 
-# ── Recall 检索 ────────────────────────────────────────────────
+# ── 服务状态 ────────────────────────────────────────────────────
+
+@router.get("/api/status")
+async def api_status():
+    """详细服务状态。"""
+    config = load_config()
+    storage = get_storage()
+    db_status = storage.get_status()
+
+    idle_level = "unknown"
+    try:
+        from app.capture.idle import get_idle_level
+        idle_level = get_idle_level().name
+    except Exception:
+        pass
+
+    queue_info = {"depth": 0, "maxsize": 0, "pressure": 0.0}
+    if _vlm_queue and _vlm_queue.maxsize:
+        queue_info = {
+            "depth": _vlm_queue.qsize(),
+            "maxsize": _vlm_queue.maxsize,
+            "pressure": round(_vlm_queue.qsize() / _vlm_queue.maxsize, 2),
+        }
+
+    return {
+        "status": "running",
+        "version": "0.2.0",
+        "capture_active": _capture_active,
+        "idle_level": idle_level,
+        "queue": queue_info,
+        "database": db_status,
+        "models": {
+            "vlm": {"enabled": config.models.vlm.enabled, "model": config.models.vlm.model},
+            "embedding": {"enabled": config.models.embedding.enabled, "model": config.models.embedding.model},
+        },
+    }
+
+
+# ── 配置管理 ────────────────────────────────────────────────────
+
+@router.get("/api/config")
+async def get_config():
+    """获取当前配置（隐藏敏感信息）。"""
+    config = load_config()
+    data = config.model_dump()
+    # 脱敏 API key
+    if data.get("models", {}).get("vlm", {}).get("api_key"):
+        key = data["models"]["vlm"]["api_key"]
+        data["models"]["vlm"]["api_key"] = key[:8] + "***" if len(key) > 8 else "***"
+    if data.get("models", {}).get("embedding", {}).get("api_key"):
+        key = data["models"]["embedding"]["api_key"]
+        data["models"]["embedding"]["api_key"] = key[:8] + "***" if len(key) > 8 else "***"
+    return data
+
+
+@router.post("/api/config")
+async def update_config(updates: dict):
+    """更新运行时配置（写入 config.yaml）。"""
+    import yaml
+    from app.config import CONFIG_PATH
+    config = load_config()
+    data = config.model_dump()
+    # 递归合并
+    def _merge(base, override):
+        for k, v in override.items():
+            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                _merge(base[k], v)
+            else:
+                base[k] = v
+    _merge(data, updates)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    return {"status": "ok", "message": "配置已更新，重启服务后生效"}
+
+
+# ── 预热 ────────────────────────────────────────────────────────
+
+@router.post("/api/warmup")
+async def warmup():
+    """手动触发 VLM/Embedding 预热。"""
+    config = load_config()
+    results = {}
+
+    if config.models.vlm.enabled:
+        from app.processing.vlm import warmup_vlm
+        import time
+        start = time.time()
+        ok = await warmup_vlm(config)
+        latency = int((time.time() - start) * 1000)
+        results["vlm"] = {"ok": ok, "latency_ms": latency}
+
+    if config.models.embedding.enabled:
+        from app.processing.embedding import warmup_embedding
+        import time
+        start = time.time()
+        ok = await warmup_embedding(config)
+        latency = int((time.time() - start) * 1000)
+        results["embedding"] = {"ok": ok, "latency_ms": latency}
+
+    return {"status": "ok", "results": results}
+
+
+# ── 单次截图 ────────────────────────────────────────────────────
+
+@router.post("/api/capture-once")
+async def api_capture_once():
+    """手动触发一次截图采集。"""
+    config = load_config()
+    storage = get_storage()
+    privacy = PrivacyGuard(config)
+
+    from app.capture.screen import capture_screen, capture_screens_multi
+    from app.capture.dedup import CascadeDeduplicator
+
+    window_info = get_active_window()
+    app_name = window_info.app_name if window_info else ""
+    window_title = window_info.window_title if window_info else ""
+    ts = datetime.now().isoformat(timespec="seconds")
+
+    if privacy.is_sensitive(app_name, window_title):
+        return {"status": "filtered", "reason": "sensitive"}
+
+    dedup_cfg = config.capture.dedup
+    dedup = CascadeDeduplicator(
+        hash_algorithm=dedup_cfg.hash_algorithm,
+        hash_threshold=dedup_cfg.hash_threshold,
+        ssim_threshold=dedup_cfg.ssim_threshold,
+        thumbnail_size=tuple(dedup_cfg.thumbnail_size),
+    )
+
+    if config.capture.per_monitor:
+        screenshots = capture_screens_multi(config)
+    else:
+        single = capture_screen(config)
+        screenshots = [(0, single)] if single else []
+
+    results = []
+    for monitor_id, path in screenshots:
+        if not path:
+            results.append({"monitor": monitor_id, "status": "failed"})
+            continue
+        dr = dedup.check(path, app_name=app_name, window_title=window_title, monitor_id=monitor_id)
+        event = RawEvent(
+            ts=ts, source="screenshot", app_name=app_name,
+            window_title=window_title, screenshot_path=str(path),
+            image_hash=dr.thumbnail_md5, duplicate_of=dr.stage if dr.is_duplicate else None,
+            monitor_id=monitor_id, processing_status="skipped" if dr.is_duplicate else "pending",
+        )
+        eid = storage.insert_event(event)
+        results.append({"monitor": monitor_id, "event_id": eid, "duplicate": dr.is_duplicate, "stage": dr.stage})
+
+    return {"status": "ok", "screenshots": results}
+
+
+# ── /ui 简易 Web 界面 ──────────────────────────────────────────
+
+@router.get("/ui", response_class=HTMLResponse)
+async def ui_page():
+    """简易 Web 界面，展示服务状态、队列、配置。"""
+    config = load_config()
+    storage = get_storage()
+    db = storage.get_status()
+    vlm_key = config.models.vlm.api_key
+    emb_key = config.models.embedding.api_key
+    vlm_masked = (vlm_key[:8] + "***") if len(vlm_key) > 8 else "***"
+    emb_masked = (emb_key[:8] + "***") if len(emb_key) > 8 else "***"
+    queue_depth = _vlm_queue.qsize() if _vlm_queue else 0
+    queue_max = _vlm_queue.maxsize if _vlm_queue else 0
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Hermes Context Memory</title>
+<style>
+body{{font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px;background:#0d1117;color:#c9d1d9}}
+h1{{color:#58a6ff}}h2{{color:#79c0ff;margin-top:30px}}
+.card{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin:10px 0}}
+.status{{display:inline-block;padding:4px 12px;border-radius:12px;font-size:13px}}
+.ok{{background:#238636}}.warn{{background:#9e6a03}}.err{{background:#da3633}}
+table{{width:100%;border-collapse:collapse}}td,th{{text-align:left;padding:6px 10px;border-bottom:1px solid #30363d}}
+button{{background:#238636;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;margin:4px}}
+button:hover{{background:#2ea043}}
+pre{{background:#161b22;padding:12px;border-radius:6px;overflow-x:auto;font-size:13px}}
+</style></head><body>
+<h1>Hermes Context Memory</h1>
+<div class="card">
+<span class="status {'ok' if _capture_active else 'warn'}">{'Capturing' if _capture_active else 'Stopped'}</span>
+&nbsp; DB: {db['raw_events']} events, {db['browser_events']} browser, {db['activity_sessions']} sessions
+&nbsp; Queue: {queue_depth}/{queue_max}
+</div>
+<h2>Models</h2>
+<div class="card"><table>
+<tr><th>Model</th><th>Status</th><th>Model Name</th><th>API Key</th></tr>
+<tr><td>VLM</td><td><span class="status {'ok' if config.models.vlm.enabled else 'err'}">{'Enabled' if config.models.vlm.enabled else 'Disabled'}</span></td>
+<td>{config.models.vlm.model}</td><td>{vlm_masked}</td></tr>
+<tr><td>Embedding</td><td><span class="status {'ok' if config.models.embedding.enabled else 'err'}">{'Enabled' if config.models.embedding.enabled else 'Disabled'}</span></td>
+<td>{config.models.embedding.model}</td><td>{emb_masked}</td></tr>
+</table></div>
+<h2>Capture</h2>
+<div class="card"><table>
+<tr><td>Interval</td><td>{config.capture.interval_seconds}s</td></tr>
+<tr><td>Per Monitor</td><td>{config.capture.per_monitor}</td></tr>
+<tr><td>Max Width</td><td>{config.capture.max_width}px</td></tr>
+<tr><td>VLM Max Width</td><td>{config.capture.vlm_max_width}px</td></tr>
+<tr><td>Dedup</td><td>{config.capture.dedup.hash_algorithm} threshold={config.capture.dedup.hash_threshold}</td></tr>
+</table></div>
+<h2>Actions</h2>
+<div class="card">
+<button onclick="fetch('/api/capture-once',{method:'POST'}).then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Capture Once</button>
+<button onclick="fetch('/api/warmup',{method:'POST'}).then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Warmup</button>
+<button onclick="fetch('/api/status').then(r=>r.json()).then(d=>document.getElementById('out').textContent=JSON.stringify(d,null,2))">Status</button>
+<pre id="out">Click an action...</pre>
+</div>
+<h2>Privacy</h2>
+<div class="card">
+Excluded apps: {', '.join(config.privacy.excluded_apps[:5])}...<br>
+Excluded domains: {', '.join(config.privacy.excluded_domains)}
+</div>
+</body></html>"""
 
 @router.post("/api/recall", response_model=RecallResponse)
 async def recall(request: RecallRequest):

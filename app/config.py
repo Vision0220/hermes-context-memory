@@ -118,11 +118,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(config_path: Path | None = None) -> AppConfig:
-    """加载配置：先用默认值，再从 config.yaml 覆盖，最后从环境变量覆盖。
+    """加载配置：默认值 → config.yaml → .env.local → 环境变量。
 
-    环境变量前缀 HERMES_，例如：
-      HERMES_SERVER_PORT=1733
-      HERMES_MODELS_VLM_ENABLED=true
+    环境变量前缀：
+      HCM_VLM_BASE_URL, HCM_VLM_API_KEY, HCM_VLM_MODEL
+      HCM_EMBEDDING_BASE_URL, HCM_EMBEDDING_API_KEY, HCM_EMBEDDING_MODEL
+      HCM_SERVER_PORT, HCM_CAPTURE_INTERVAL_SECONDS 等
     """
     path = config_path or CONFIG_PATH
     data: dict = {}
@@ -132,7 +133,52 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
-    # 环境变量覆盖（简单实现：仅覆盖顶层.二级.三级）
+    # 从 .env.local 加载
+    env_local = PROJECT_ROOT / ".env.local"
+    if env_local.exists():
+        try:
+            from dotenv import dotenv_values
+            env_values = dotenv_values(env_local)
+            for k, v in env_values.items():
+                os.environ.setdefault(k, v)
+        except ImportError:
+            # 手动解析 .env.local
+            with open(env_local, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+    # HCM_ 前缀的专用映射
+    _hcm_mapping = {
+        "HCM_VLM_BASE_URL": ("models", "vlm", "base_url"),
+        "HCM_VLM_API_KEY": ("models", "vlm", "api_key"),
+        "HCM_VLM_MODEL": ("models", "vlm", "model"),
+        "HCM_VLM_ENABLED": ("models", "vlm", "enabled"),
+        "HCM_EMBEDDING_BASE_URL": ("models", "embedding", "base_url"),
+        "HCM_EMBEDDING_API_KEY": ("models", "embedding", "api_key"),
+        "HCM_EMBEDDING_MODEL": ("models", "embedding", "model"),
+        "HCM_EMBEDDING_ENABLED": ("models", "embedding", "enabled"),
+        "HCM_SERVER_PORT": ("server", "port"),
+        "HCM_SERVER_HOST": ("server", "host"),
+        "HCM_CAPTURE_INTERVAL": ("capture", "interval_seconds"),
+        "HCM_CAPTURE_ENABLED": ("capture", "enabled"),
+    }
+    for env_key, path_tuple in _hcm_mapping.items():
+        value = os.environ.get(env_key)
+        if value is not None:
+            target = data
+            for part in path_tuple[:-1]:
+                target = target.setdefault(part, {})
+            # 类型转换
+            if value.lower() in ("true", "false"):
+                value = value.lower() == "true"
+            elif value.isdigit():
+                value = int(value)
+            target[path_tuple[-1]] = value
+
+    # HERMES_ 前缀兼容（旧版）
     env_prefix = "HERMES_"
     for key, value in os.environ.items():
         if not key.startswith(env_prefix):
@@ -141,7 +187,6 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         target = data
         for part in parts[:-1]:
             target = target.setdefault(part, {})
-        # 类型转换
         if value.lower() in ("true", "false"):
             value = value.lower() == "true"
         elif value.isdigit():

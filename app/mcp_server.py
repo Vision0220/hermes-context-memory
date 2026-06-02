@@ -233,6 +233,56 @@ def forget_context(
         return f"删除失败: {e}"
 
 
+@mcp.tool()
+def get_context_service_status() -> str:
+    """获取 Context Memory 服务的完整状态。
+
+    Returns:
+        服务状态、数据库统计、模型状态、队列信息。
+    """
+    try:
+        from app.config import load_config
+        from app.storage import Storage
+
+        config = load_config()
+        storage = Storage()
+        storage.init_db()
+        db = storage.get_status()
+        storage.close()
+
+        lines = [
+            "=== Hermes Context Memory 状态 ===",
+            f"数据库事件: {db['raw_events']}",
+            f"浏览器事件: {db['browser_events']}",
+            f"活动会话: {db['activity_sessions']}",
+            f"数据库路径: {db['db_path']}",
+            "",
+            "== 截图采集 ==",
+            f"启用: {'是' if config.capture.enabled else '否'}",
+            f"间隔: {config.capture.interval_seconds}秒",
+            f"多屏: {'是' if config.capture.per_monitor else '否'}",
+            f"最大宽度: {config.capture.max_width}px",
+            f"VLM最大宽度: {config.capture.vlm_max_width}px",
+            "",
+            "== 去重配置 ==",
+            f"算法: {config.capture.dedup.hash_algorithm}",
+            f"阈值: {config.capture.dedup.hash_threshold}",
+            f"SSIM阈值: {config.capture.dedup.ssim_threshold}",
+            "",
+            "== 模型 ==",
+            f"VLM: {'启用' if config.models.vlm.enabled else '禁用'} - {config.models.vlm.model}",
+            f"Embedding: {'启用' if config.models.embedding.enabled else '禁用'} - {config.models.embedding.model}",
+            "",
+            "== 隐私 ==",
+            f"敏感应用: {len(config.privacy.excluded_apps)} 个",
+            f"敏感域名关键词: {len(config.privacy.excluded_domains)} 个",
+        ]
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"获取状态失败: {e}"
+
+
 def main():
     """启动 MCP Server。"""
     mcp.run(transport="stdio")
