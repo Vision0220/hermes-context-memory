@@ -15,8 +15,17 @@ const HEALTH_URLS = [
 ];
 const DEBOUNCE_MS = 2000;
 
-let activeApiUrl = API_URLS[0]; // 缓存可用的 URL
+let activeApiUrl = API_URLS[0];
 const recentEvents = new Map();
+
+// 安全写入 storage
+function storageSet(data) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set(data);
+    }
+  } catch {}
+}
 
 /**
  * 发送浏览器事件到本地服务
@@ -61,7 +70,7 @@ async function sendEvent(tab) {
       });
       if (response.ok) {
         activeApiUrl = apiUrl; // 缓存成功的 URL
-        chrome.storage.local.set({
+        storageSet({
           connected: true,
           lastUrl: tab.url,
           lastTitle: tab.title,
@@ -74,7 +83,7 @@ async function sendEvent(tab) {
   }
 
   // 所有 URL 都失败
-  chrome.storage.local.set({ connected: false, lastError: "All endpoints unreachable" });
+  storageSet({ connected: false, lastError: "All endpoints unreachable" });
 }
 
 /**
@@ -128,12 +137,12 @@ async function checkConnection() {
         signal: AbortSignal.timeout(3000),
       });
       if (response.ok) {
-        chrome.storage.local.set({ connected: true, lastError: "" });
+        storageSet({ connected: true, lastError: "" });
         return;
       }
     } catch {}
   }
-  chrome.storage.local.set({ connected: false, lastError: "Health check failed" });
+  storageSet({ connected: false, lastError: "Health check failed" });
 }
 
 chrome.alarms.create("healthCheck", { periodInMinutes: 0.5 });
