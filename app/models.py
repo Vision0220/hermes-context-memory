@@ -37,6 +37,11 @@ class RawEvent(BaseModel):
     vlm_json: Optional[str] = None
     sensitive: bool = False
     created_at: str = Field(default_factory=_now_iso)
+    # 新增字段
+    monitor_id: int = 0
+    processing_status: str = "pending"  # pending / processing / completed / failed / skipped
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
 
 # ── 浏览器事件 ──────────────────────────────────────────────────

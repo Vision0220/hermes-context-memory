@@ -23,12 +23,28 @@ class ServerConfig(BaseModel):
     port: int = 1833
 
 
+class DedupConfig(BaseModel):
+    """去重管线配置。"""
+    hash_algorithm: str = "dhash"  # dhash / phash
+    hash_threshold: int = 6        # 汉明距离阈值
+    ssim_threshold: float = 0.85   # SSIM 相似度阈值（仅边界 case）
+    thumbnail_size: List[int] = Field(default_factory=lambda: [64, 36])
+
+
 class CaptureConfig(BaseModel):
     enabled: bool = True
     interval_seconds: int = 15
     max_width: int = 1600
     quality: int = 75
     save_raw_screenshot_days: int = 14
+    # 多屏
+    per_monitor: bool = True
+    monitors: List[int] = Field(default_factory=list)  # 空=全部
+    # 高分辨率
+    vlm_max_width: int = 2048
+    hash_max_width: int = 640
+    # 去重
+    dedup: DedupConfig = Field(default_factory=DedupConfig)
 
 
 class PrivacyConfig(BaseModel):
@@ -52,6 +68,10 @@ class VLMConfig(BaseModel):
     base_url: str = "http://127.0.0.1:1234/v1"
     api_key: str = "lm-studio"
     model: str = "local-vlm-model"
+    max_tokens: int = 1024
+    temperature: float = 0.1
+    timeout: int = 60       # 秒
+    retry_count: int = 2
 
 
 class EmbeddingConfig(BaseModel):
@@ -59,6 +79,8 @@ class EmbeddingConfig(BaseModel):
     base_url: str = "http://127.0.0.1:1234/v1"
     api_key: str = "lm-studio"
     model: str = "local-embedding-model"
+    timeout: int = 30       # 秒
+    retry_count: int = 2
 
 
 class ModelsConfig(BaseModel):

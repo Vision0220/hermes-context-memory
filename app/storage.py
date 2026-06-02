@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS raw_events (
     vlm_summary TEXT,
     vlm_json TEXT,
     sensitive INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    monitor_id INTEGER DEFAULT 0,
+    processing_status TEXT DEFAULT 'pending',
+    image_width INTEGER,
+    image_height INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS browser_events (
@@ -128,14 +132,25 @@ class Storage:
             self.conn = None
 
     def init_db(self):
-        """初始化数据库表结构。"""
+        """初始化数据库表结构，含自动迁移。"""
         conn = self.connect()
         conn.executescript(_SCHEMA_SQL)
         try:
             conn.executescript(_FTS5_SQL)
         except sqlite3.OperationalError:
-            # FTS5 不可用时静默跳过（极少数环境）
             pass
+        # 自动迁移：为已有表添加新列（IF NOT EXISTS 不支持，用 try/except）
+        _migrations = [
+            "ALTER TABLE raw_events ADD COLUMN monitor_id INTEGER DEFAULT 0",
+            "ALTER TABLE raw_events ADD COLUMN processing_status TEXT DEFAULT 'pending'",
+            "ALTER TABLE raw_events ADD COLUMN image_width INTEGER",
+            "ALTER TABLE raw_events ADD COLUMN image_height INTEGER",
+        ]
+        for sql in _migrations:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         conn.commit()
 
     def get_status(self) -> dict:
@@ -160,14 +175,21 @@ class Storage:
             d = event.model_dump()
         else:
             d = dict(event)
+        # 为新字段提供默认值（兼容旧数据）
+        d.setdefault("monitor_id", 0)
+        d.setdefault("processing_status", "pending")
+        d.setdefault("image_width", None)
+        d.setdefault("image_height", None)
         conn.execute(
             """INSERT OR REPLACE INTO raw_events
                (id, ts, source, app_name, process_name, window_title, url, domain,
                 screenshot_path, image_hash, duplicate_of, ocr_text, vlm_summary,
-                vlm_json, sensitive, created_at)
+                vlm_json, sensitive, created_at, monitor_id, processing_status,
+                image_width, image_height)
                VALUES (:id, :ts, :source, :app_name, :process_name, :window_title,
                        :url, :domain, :screenshot_path, :image_hash, :duplicate_of,
-                       :ocr_text, :vlm_summary, :vlm_json, :sensitive, :created_at)""",
+                       :ocr_text, :vlm_summary, :vlm_json, :sensitive, :created_at,
+                       :monitor_id, :processing_status, :image_width, :image_height)""",
             d,
         )
         conn.commit()
@@ -188,6 +210,29 @@ class Storage:
         )
         conn.commit()
         return d["id"]
+
+    def update_event_fields(self, event_id: str, fields: dict) -> bool:
+        """更新事件的部分字段（用于 VLM/Embedding 处理完成后回写）。"""
+        conn = self.connect()
+        if not fields:
+            return False
+        set_parts = [f"{k} = ?" for k in fields]
+        values = list(fields.values()) + [event_id]
+        conn.execute(
+            f"UPDATE raw_events SET {', '.join(set_parts)} WHERE id = ?",
+            values,
+        )
+        conn.commit()
+        return True
+
+    def get_pending_events(self, limit: int = 10) -> List[dict]:
+        """获取待处理的事件（用于 VLM/Embedding 异步处理）。"""
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT * FROM raw_events WHERE processing_status = 'pending' AND sensitive = 0 ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def insert_session(self, session) -> str:
         """插入一条活动会话。"""
