@@ -82,13 +82,22 @@ CREATE TABLE IF NOT EXISTS config_state (
 CREATE TABLE IF NOT EXISTS screenshot_tiles (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL,
+    monitor_id INTEGER DEFAULT 0,
+    tile_id INTEGER DEFAULT 0,
     tile_row INTEGER,
     tile_col INTEGER,
+    x INTEGER DEFAULT 0,
+    y INTEGER DEFAULT 0,
+    width INTEGER DEFAULT 0,
+    height INTEGER DEFAULT 0,
     tile_path TEXT,
     tile_hash TEXT,
     changed INTEGER DEFAULT 0,
+    changed_score REAL DEFAULT 0.0,
     text_density REAL DEFAULT 0.0,
+    ocr_text TEXT,
     vlm_summary TEXT,
+    reused_from_tile_id INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -187,6 +196,15 @@ class Storage:
             "ALTER TABLE raw_events ADD COLUMN image_height INTEGER",
             "ALTER TABLE raw_events ADD COLUMN reused_from_event_id TEXT",
             "ALTER TABLE raw_events ADD COLUMN skip_reason TEXT",
+            "ALTER TABLE screenshot_tiles ADD COLUMN monitor_id INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN tile_id INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN x INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN y INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN width INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN height INTEGER DEFAULT 0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN changed_score REAL DEFAULT 0.0",
+            "ALTER TABLE screenshot_tiles ADD COLUMN ocr_text TEXT",
+            "ALTER TABLE screenshot_tiles ADD COLUMN reused_from_tile_id INTEGER",
         ]
         for sql in _migrations:
             try:
@@ -284,16 +302,52 @@ class Storage:
         conn = self.connect()
         from datetime import datetime
         tile_data.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
+        tile_data.setdefault("monitor_id", 0)
+        tile_data.setdefault("tile_id", 0)
+        tile_data.setdefault("x", 0)
+        tile_data.setdefault("y", 0)
+        tile_data.setdefault("width", 0)
+        tile_data.setdefault("height", 0)
+        tile_data.setdefault("changed_score", 0.0)
+        tile_data.setdefault("ocr_text", None)
+        tile_data.setdefault("reused_from_tile_id", None)
         conn.execute(
             """INSERT OR REPLACE INTO screenshot_tiles
-               (id, event_id, tile_row, tile_col, tile_path, tile_hash,
-                changed, text_density, vlm_summary, created_at)
-               VALUES (:id, :event_id, :tile_row, :tile_col, :tile_path, :tile_hash,
-                        :changed, :text_density, :vlm_summary, :created_at)""",
+               (id, event_id, monitor_id, tile_id, tile_row, tile_col,
+                x, y, width, height, tile_path, tile_hash, changed, changed_score,
+                text_density, ocr_text, vlm_summary, reused_from_tile_id, created_at)
+               VALUES (:id, :event_id, :monitor_id, :tile_id, :tile_row, :tile_col,
+                        :x, :y, :width, :height, :tile_path, :tile_hash, :changed,
+                        :changed_score, :text_density, :ocr_text, :vlm_summary,
+                        :reused_from_tile_id, :created_at)""",
             tile_data,
         )
         conn.commit()
         return tile_data.get("id", "")
+
+    def persist_metrics(self, metrics_data: dict):
+        """持久化调度器指标到 scheduler_metrics 表。"""
+        conn = self.connect()
+        from datetime import datetime
+        conn.execute(
+            """INSERT INTO scheduler_metrics
+               (ts, interval_seconds, idle_level, queue_depth, queue_pressure,
+                captures_total, duplicates_skipped, vlm_processed, vlm_failed)
+               VALUES (:ts, :interval_seconds, :idle_level, :queue_depth, :queue_pressure,
+                        :captures_total, :duplicates_skipped, :vlm_processed, :vlm_failed)""",
+            {
+                "ts": metrics_data.get("ts", datetime.now().isoformat(timespec="seconds")),
+                "interval_seconds": metrics_data.get("current_interval", 15.0),
+                "idle_level": metrics_data.get("idle_level", ""),
+                "queue_depth": metrics_data.get("queue_depth", 0),
+                "queue_pressure": metrics_data.get("queue_pressure", 0.0),
+                "captures_total": metrics_data.get("captures_total", 0),
+                "duplicates_skipped": metrics_data.get("duplicates_skipped", 0),
+                "vlm_processed": metrics_data.get("vlm_processed", 0),
+                "vlm_failed": metrics_data.get("vlm_failed", 0),
+            },
+        )
+        conn.commit()
 
     def get_recent_sessions(self, minutes: int = 60) -> List[dict]:
         """获取最近的活动会话。"""

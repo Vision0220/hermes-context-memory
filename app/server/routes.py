@@ -521,12 +521,16 @@ def _enqueue_vlm(task: _VLMTask):
 # ── 采集循环（智能版）────────────────────────────────────────
 
 async def _sessionizer_loop(config: AppConfig, interval_minutes: int = 5):
-    """定期运行会话聚合。"""
+    """定期运行会话聚合 + 指标持久化。"""
     storage = get_storage()
     from app.processing.sessionizer import sessionize_events
     while True:
         try:
             await asyncio.sleep(interval_minutes * 60)
+            # 指标持久化
+            snap = _metrics.snapshot()
+            storage.persist_metrics(snap.to_dict())
+            # 会话聚合
             events = storage.get_recent_events(minutes=interval_minutes + 1)
             if len(events) < 2:
                 continue
@@ -638,12 +642,18 @@ async def capture_loop(config: AppConfig):
                 except Exception:
                     pass
 
-                # Keyframe 检测: app/URL/title 变化 → 强制非重复
+                # Keyframe 检测: app/URL/title 变化, 首帧 → 强制非重复
                 is_keyframe = False
                 pa = prev_app.get(monitor_id, "")
                 pt = prev_title.get(monitor_id, "")
+                ph = prev_hash.get(monitor_id, "")
+                # 首帧（该显示器从未截图）
+                if monitor_id not in prev_app:
+                    is_keyframe = True
+                # App 变化
                 if app_name and app_name != pa:
                     is_keyframe = True
+                # 窗口标题变化
                 if window_title and window_title != pt:
                     is_keyframe = True
 
@@ -652,6 +662,7 @@ async def capture_loop(config: AppConfig):
                     dedup_result.stage = "keyframe"
 
                 # 构建事件
+                skip_reason = dedup_result.stage if dedup_result.is_duplicate else None
                 event = RawEvent(
                     ts=ts, source="screenshot",
                     app_name=app_name, process_name=process_name,
@@ -662,6 +673,7 @@ async def capture_loop(config: AppConfig):
                     sensitive=False, monitor_id=monitor_id,
                     image_width=img_width, image_height=img_height,
                     processing_status="skipped" if dedup_result.is_duplicate else "pending",
+                    skip_reason=skip_reason,
                 )
 
                 # 语义缓存检查（去重通过后）
@@ -702,12 +714,29 @@ async def capture_loop(config: AppConfig):
                                     storage.insert_tile({
                                         "id": f"{event_id}_{tile.tile_id}",
                                         "event_id": event_id,
+                                        "monitor_id": monitor_id,
+                                        "tile_id": tile.tile_id,
                                         "tile_row": tile.y // tile_proc.tile_height,
                                         "tile_col": tile.x // tile_proc.tile_width,
+                                        "x": tile.x,
+                                        "y": tile.y,
+                                        "width": tile.width,
+                                        "height": tile.height,
                                         "tile_path": tile.tile_path,
                                         "tile_hash": tile.tile_hash,
                                         "changed": 1 if tile.changed_score > 0.1 else 0,
+                                        "changed_score": tile.changed_score,
                                         "text_density": tile.text_density,
+                                    })
+                                # 合并瓦片摘要到父事件
+                                tile_summaries = [
+                                    f"[Tile {t.tile_id}] density={t.text_density:.2f}"
+                                    for t in important if t.text_density > 0.1
+                                ]
+                                if tile_summaries:
+                                    merged = f"Overview({img_width}x{img_height}) | " + " | ".join(tile_summaries)
+                                    storage.update_event_fields(event_id, {
+                                        "vlm_summary": merged,
                                     })
                                 logger.info("瓦片 [%d] %s: %d tiles saved",
                                             monitor_id, screenshot_path.name, len(important))

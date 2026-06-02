@@ -11,14 +11,16 @@
 | 2 | pytest | `uv run pytest tests/ -v` | ✅ PASS | 75/75 passed, 1.59s |
 | 3 | init | `uv run context-memory init` | ✅ PASS | 目录+配置+数据库创建 |
 | 4 | doctor | `uv run context-memory doctor` | ✅ PASS | 45 文件扫描, 无泄露 |
-| 5 | capture-once | `uv run context-memory capture-once` | ✅ PASS | 微信被识别为敏感,跳过截图 |
-| 6 | start | `uv run uvicorn app.server.main:app` | ✅ PASS | 采集循环启动,VLM+Embedding预热成功 |
+| 5 | capture-once | `uv run context-memory capture-once` | ✅ PASS | 截图保存成功 |
+| 6 | start | `uv run uvicorn app.server.main:app` | ✅ PASS | VLM+Embedding预热,采集启动 |
 | 7 | /health | `curl http://127.0.0.1:1833/health` | ✅ PASS | status=ok, capture_active=true |
-| 8 | /api/capture-once | `curl -X POST /api/capture-once` | ✅ PASS | 双屏截图: monitor 1 + monitor 2 |
-| 9 | /api/recall | `POST /api/recall {"query":"Edge"}` | ✅ PASS | 返回 5 条结果 |
-| 10 | /ui | `curl http://127.0.0.1:1833/ui` | ✅ PASS | HTML 页面加载(修复了 f-string bug) |
-| 11 | browser_extension | 文件检查 | ✅ PASS | 4 文件存在,README有加载说明 |
-| 12 | MCP server | Python import | ✅ PASS | 5 工具注册(修复了 FastMCP API) |
+| 8 | /api/capture-once | `curl -X POST /api/capture-once` | ✅ PASS | 双屏截图,级联去重 |
+| 9a | /api/recall EN | `POST /api/recall {"query":"Hermes"}` | ✅ PASS | 3 条结果 |
+| 9b | /api/recall CN | `POST /api/recall {"query":"我刚才看了什么"}` | ⚠️ DEGRADED | FTS5 不支持中文分词,返回空 |
+| 10 | /api/timeline | `GET /api/timeline?date=2026-06-03` | ✅ PASS | 32 事件 |
+| 10b | /api/status | `GET /api/status` | ✅ PASS | metrics+cache 统计 |
+| 11 | browser_extension | 文件检查 | ✅ PASS | 4 文件存在 |
+| 12 | MCP server | Python import | ✅ PASS | 5 工具注册 |
 
 ## 修复的问题
 
