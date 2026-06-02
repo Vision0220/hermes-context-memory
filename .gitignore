@@ -10,8 +10,13 @@ build/
 data/
 *.sqlite
 
-# 配置（config.yaml 包含本地设置，不提交）
+# 配置（包含本地设置/API key，不提交）
 config.yaml
+config.local.yaml
+
+# 日志
+logs/
+*.log
 
 # IDE
 .vscode/
