@@ -58,7 +58,7 @@ def search_context(request: RecallRequest, config: AppConfig) -> List[RecallResu
             # 应用时间范围过滤
             if request.time_range:
                 cutoff = parse_time_range(request.time_range)
-                if cutoff and row.get("ts", "") < cutoff:
+                if cutoff and (row.get("ts") or "") < cutoff:
                     continue
 
             # 应用过滤器

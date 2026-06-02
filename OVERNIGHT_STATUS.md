@@ -45,27 +45,26 @@
 
 | 查询 | 结果 | 说明 |
 |------|------|------|
-| "我刚才看了什么" | ✅ 1 result | CJK 2-gram 匹配 |
-| "刚才打开过哪些网页" | ✅ 2 results | 匹配浏览器标题 |
-| "我刚才在哪个应用里工作" | 0 | 关键词不含应用名 |
-| "今天浏览过哪些和Hermes相关的内容" | 0 | 需 embedding |
+| "我刚才看了什么" | ✅ 1 result | CJK 2-gram + recall_chunks |
+| "刚才打开过哪些网页" | ✅ 3 results | 浏览器标题匹配 |
+| "我刚才在哪个应用里工作" | ✅ 3 results | recall_chunks 中文摘要 |
+| "今天浏览过哪些和Hermes相关的内容" | ✅ 3 results | 拉丁词 Hermes + CJK 混合提取 |
 | "Hermes" | ✅ 3 results | FTS5 MATCH |
 | "GitHub" | ✅ 1 result | 浏览器事件 |
 
 ## 指标
 
-| 指标 | 值 |
-|------|-----|
-| raw_events | 20 |
+| 表 | 行数 |
+|------|------|
+| raw_events | 24 |
 | browser_events | 5 |
 | screenshot_tiles | 6 |
 | activity_sessions | 3 |
+| recall_chunks | 29 |
 | scheduler_metrics | 1 |
-| VLM completed | 2 |
-| VLM skipped | 2 |
+| model_status | 2 |
 | DB size | 0.12 MB |
 | Screenshots | 27 files, 4.34 MB |
-| Monitors seen | 2 |
 
 ## 发布加固
 

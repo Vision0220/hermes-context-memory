@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS model_status (
     last_error TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS event_vectors (
+    event_id TEXT PRIMARY KEY,
+    embedding BLOB
+);
 """
 
 # FTS5 虚拟表 — 用于全文检索
@@ -470,38 +475,60 @@ class Storage:
                     seen[rid] = {"row": r, "hits": 0}
                 seen[rid]["hits"] += 1
 
+            # 搜索 recall_chunks（包含中文摘要）
+            chunk_rows = conn.execute(
+                """SELECT rc.event_id, re.ts, re.app_name, re.window_title, re.url,
+                          re.domain, re.screenshot_path, re.image_hash, re.duplicate_of,
+                          re.ocr_text, rc.chunk_text as vlm_summary, re.vlm_json,
+                          re.sensitive, re.created_at, re.monitor_id,
+                          re.processing_status, re.image_width, re.image_height,
+                          re.reused_from_event_id, re.skip_reason, re.source
+                   FROM recall_chunks rc
+                   LEFT JOIN raw_events re ON rc.event_id = re.id
+                   WHERE rc.chunk_text LIKE ?
+                   ORDER BY re.ts DESC LIMIT ?""",
+                (f"%{kw}%", limit),
+            ).fetchall()
+            for r in chunk_rows:
+                r = dict(r)
+                rid = r.get("event_id", "") or r.get("id", "")
+                if rid and rid not in seen:
+                    seen[rid] = {"row": r, "hits": 0}
+                if rid:
+                    seen[rid]["hits"] += 1
+
         # 按匹配关键词数降序排列
         results = sorted(seen.values(), key=lambda x: x["hits"], reverse=True)
         return [r["row"] for r in results[:limit]]
 
     def _extract_cjk_keywords(self, query: str) -> List[str]:
-        """从 CJK 查询中提取关键词（简单 2-gram + 去停用词）。"""
-        # 停用词
+        """从 CJK 查询中提取关键词（2-gram + 拉丁词 + 去停用词）。"""
         stops = set("的了是在有不人大中上为这个们这来和到说就也出会能对可你着"
                      "那得地而过子下么她好将把当只与让给被又从去已经"
                      "刚才什么哪个怎我")
+
+        # 提取拉丁词（英文/数字）
+        import re
+        latin_words = re.findall(r'[A-Za-z0-9]{2,}', query)
+
         # 提取连续 CJK 字符
         cjk_chars = [c for c in query if '一' <= c <= '鿿' or '㐀' <= c <= '䶿']
-        if not cjk_chars:
+        if not cjk_chars and not latin_words:
             return [query]
 
-        # 2-gram
+        # CJK 2-gram
         bigrams = set()
         for i in range(len(cjk_chars) - 1):
             bg = cjk_chars[i] + cjk_chars[i + 1]
             if bg not in stops and not all(c in stops for c in bg):
                 bigrams.add(bg)
 
-        # 单字符（非停用）
-        singles = set()
-        for c in cjk_chars:
-            if c not in stops and len(c) == 1:
-                singles.add(c)
+        # CJK 单字符（非停用）
+        singles = {c for c in cjk_chars if c not in stops}
 
-        # 合并，优先 bigrams
-        keywords = list(bigrams) + list(singles)
-        # 限制数量避免过多查询
-        return keywords[:10]
+        # 合并：拉丁词 + bigrams + singles
+        keywords = latin_words + list(bigrams) + list(singles)
+        return keywords[:15]
 
     def delete_events(self, conditions: dict) -> int:
         """按条件删除事件，返回删除数量。"""
