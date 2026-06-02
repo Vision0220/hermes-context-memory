@@ -84,8 +84,8 @@ capture:
 models:
   vlm:
     enabled: true
-    base_url: "https://your-api-host/v1"
-    api_key: "REDACTED-API-KEY"
+    base_url: "https://your-api-url/v1"
+    api_key: "your-api-key-here"
     model: "qwen/qwen3.6-35b-a3b"
     max_tokens: 1024
     temperature: 0.1
@@ -93,8 +93,8 @@ models:
     retry_count: 2
   embedding:
     enabled: true
-    base_url: "https://your-api-host/v1"
-    api_key: "REDACTED-API-KEY"
+    base_url: "https://your-api-url/v1"
+    api_key: "your-api-key-here"
     model: "text-embedding-qwen3-embedding-4b"
     timeout: 30
     retry_count: 2

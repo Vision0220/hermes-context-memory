@@ -1,5 +1,4 @@
-# Hermes Context Memory Service — 配置文件
-# 复制为 config.yaml 后修改
+# Hermes Context Memory Service — 配置文件模板
 
 server:
   host: "127.0.0.1"
@@ -11,6 +10,15 @@ capture:
   max_width: 1600
   quality: 75
   save_raw_screenshot_days: 14
+  per_monitor: true        # 按物理显示器独立截图
+  monitors: []             # 空=全部, [1,2]=指定
+  vlm_max_width: 2048      # 发送给 VLM 的最大宽度
+  hash_max_width: 640      # 用于 hash 计算的缩放宽度
+  dedup:
+    hash_algorithm: "dhash" # dhash / phash
+    hash_threshold: 6       # 汉明距离阈值
+    ssim_threshold: 0.85    # SSIM 相似度阈值
+    thumbnail_size: [64, 36]
 
 privacy:
   local_only: true
@@ -48,11 +56,17 @@ models:
     base_url: "http://127.0.0.1:1234/v1"
     api_key: "lm-studio"
     model: "local-vlm-model"
+    max_tokens: 1024
+    temperature: 0.1
+    timeout: 60
+    retry_count: 2
   embedding:
     enabled: false
     base_url: "http://127.0.0.1:1234/v1"
     api_key: "lm-studio"
     model: "local-embedding-model"
+    timeout: 30
+    retry_count: 2
 
 retrieval:
   top_k: 8
