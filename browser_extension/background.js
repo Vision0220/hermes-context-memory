@@ -36,6 +36,8 @@ async function sendEvent(tab) {
     return;
   }
 
+  console.log("[sendEvent] tab:", tab.url.substring(0, 50));
+
   const tabKey = `${tab.id}_${tab.url}`;
   const lastSent = recentEvents.get(tabKey);
   if (lastSent && Date.now() - lastSent < DEBOUNCE_MS) return;
@@ -152,3 +154,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 checkConnection();
 console.log("Hermes Context Memory extension started (MV3)");
+console.log("API_URLS:", JSON.stringify(API_URLS));
+
+// ── 调试：定期检查 service worker 状态 ──────────────────────
+chrome.alarms.create("debugHeartbeat", { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "debugHeartbeat") {
+    console.log("[heartbeat] service worker alive, recentEvents:", recentEvents.size);
+  }
+});
