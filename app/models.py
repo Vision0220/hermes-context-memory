@@ -128,6 +128,23 @@ class VLMSummary(BaseModel):
     sensitive_content: bool = False
     summary_zh: str = ""
 
+    @classmethod
+    def _coerce_list(cls, v):
+        """VLM 可能返回字符串而非列表，自动转换。"""
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        if isinstance(v, list):
+            return v
+        return []
+
+    def __init__(self, **data):
+        # 在 Pydantic 验证前转换字符串为列表
+        if "key_entities" in data and isinstance(data["key_entities"], str):
+            data["key_entities"] = [data["key_entities"]] if data["key_entities"].strip() else []
+        if "useful_facts" in data and isinstance(data["useful_facts"], str):
+            data["useful_facts"] = [data["useful_facts"]] if data["useful_facts"].strip() else []
+        super().__init__(**data)
+
 
 # ── 健康检查 ────────────────────────────────────────────────────
 
